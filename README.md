@@ -77,7 +77,7 @@ Put your ROMs in `apps\roms\<system>\` (see [docs/ROMS.md](docs/ROMS.md)); the p
 
 **Adding a ROM set:** `tools\import_roms.py "<set>.zip" <system>` unpacks a set (including zips nested inside it) into `apps\roms\<system>\`.
 
-**FOV tweak:** `plugins\EchoArcade\echo_tweaks.ini` sets `[fov] x=` / `y=` multipliers (0.5 to 2.0), the same idea as EchoVR-Haptics' FovMultiplier. The install seeds it from an old `haptics_config.txt` if present and never overwrites your edits.
+**FOV tweak:** `plugins\EchoArcade\echo_tweaks.ini` sets `[fov] x=` / `y=` multipliers (0.5 to 2.0), the same idea as EchoVR-Haptics' FovMultiplier, so you don't need that tool (it replaces EchoLoader; see Troubleshooting). Keep x and y equal (e.g. 1.4) for recordings; stretching one axis looks warped. The install seeds it from an old `haptics_config.txt` if present and never overwrites your edits.
 
 **Plex privacy:** linking stores a Plex token in `%LOCALAPPDATA%\EchoArcade\plex.json`, never in the repo or the logs. *Unlink Plex* at the bottom of the Plex library list removes it. Streams go straight from your server to this PC.
 
@@ -94,6 +94,7 @@ dist\EchoArcade\ArcadeHost.exe --standalone
 ## Troubleshooting
 
 - The logs are `%LOCALAPPDATA%\EchoArcade\runtime.log` (in-game plugin) and `host.log` (launcher and apps).
+- **PLAY tab shows but does nothing, and there's no `runtime.log`:** the plugin never started. Run `tools\install.py status`. If `echoloader dll: False`, another mod (e.g. the EchoVR-Haptics/FOV tool) replaced `bin\win10\dbgcore.dll`. Put EchoLoader back from `https://files.echovr.de/updates/dbgcore.dll` (the Echo VR Installer's source).
 - **PLAY tab missing:** check `runtime.log` for `unsupported echovr.exe` or `signature mismatch`. Another tablet mod (e.g. the DOOM/MUSIC tab) uses the same slot; restore that one first.
 - **Tab opens but shows the "STARTING…" splash forever:** look for `stream:` lines in `runtime.log`. `screen texture created` and `frames uploaded` should both appear.
 - **App windows** sit behind your other windows at the top-left of the desktop. Set `window_mode=offscreen` in `plugins\EchoArcade\arcade.ini` to move them off-screen.

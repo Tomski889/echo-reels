@@ -95,6 +95,18 @@ def load_loader(p: Path):
     return json.loads(p.read_text(encoding='utf-8'))
 
 
+def check_echoloader(p):
+    """Other mod tools (e.g. EchoVR-Haptics) replace bin/win10/dbgcore.dll with
+    their own proxy; then EchoLoader, and every plugin it loads, silently stops."""
+    dll = p['bin'] / 'dbgcore.dll'
+    if dll.exists() and b'EchoLoader' in dll.read_bytes():
+        return True
+    print('WARNING: bin/win10/dbgcore.dll is not EchoLoader (another mod replaced it?).\n'
+          '         Echo Arcade will not load until it is restored: download dbgcore.dll from\n'
+          '         https://files.echovr.de/updates/ (the Echo VR Installer\'s source) into bin/win10.')
+    return False
+
+
 def install(game: Path):
     check_game(game)
     if STATE.exists():
@@ -130,6 +142,7 @@ def install(game: Path):
 
     STATE.write_text(json.dumps(dict(game=str(game), backup=str(backup), package=meta['package'],
                                      manifest_sha256=sha(p['manifest']), original_manifest_sha256=meta['base_manifest_sha256']), indent=2))
+    check_echoloader(p)
     print(f'Installed. Backups in {backup}')
     print('Start Echo VR normally, open the hand tablet and press PLAY (left of the tabs).')
 
@@ -155,6 +168,8 @@ def write_tweaks(p):
                     y = float(value)
             except ValueError:
                 pass
+        # One-axis stretch (e.g. x1.0 y1.5) looks warped in a wide recording window.
+        x = y = max(x, y)
     target.write_text(f"""; Echo VR tweaks (read when Echo starts; edit freely, updates keep this file)
 [fov]
 ; Eye field-of-view multipliers, 0.5 to 2.0 (1.0 = normal). Widens the view the
@@ -184,6 +199,7 @@ def update(game: Path):
     ensure_loader_entry(loader.setdefault('plugins', []))
     p['loader'].write_text(json.dumps(loader, indent=4) + '\n', encoding='utf-8')
     print('Updated EchoArcade.dll, ArcadeHost.exe and arcade.ini (tablet data unchanged).')
+    check_echoloader(p)
 
 
 def restore(game: Path, force: bool):
@@ -218,6 +234,7 @@ def status(game: Path):
     print('game:', game)
     print('installed:', STATE.exists())
     print('plugin present:', (p['plugins'] / 'EchoArcade.dll').exists())
+    print('echoloader dll:', check_echoloader(p))
     print('loader entry:', any(e.get('file', '').lower() == 'echoarcade.dll' for e in load_loader(p['loader']).get('plugins', [])))
     print('manifest sha256:', sha(p['manifest']))
 
