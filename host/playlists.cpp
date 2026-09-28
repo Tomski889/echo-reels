@@ -82,12 +82,29 @@ std::wstring lower(std::wstring s) {
     return s;
 }
 
-// Disc images: prefer .m3u over its discs, and .cue over its .bin tracks.
-bool skipDiscFile(const fs::path& file, const std::set<fs::path>& folderHasM3u, const std::set<fs::path>& folderHasCue) {
-    auto ext = lower(file.extension().wstring());
-    bool disc = ext == L".cue" || ext == L".chd" || ext == L".bin" || ext == L".iso" || ext == L".img" || ext == L".pbp";
-    if (disc && folderHasM3u.count(file.parent_path())) return true;
-    return ext == L".bin" && folderHasCue.count(file.parent_path());
+// Files referenced by an .m3u (discs of one game) or a .cue (its .bin tracks) are
+// launched through that list, so they get no playlist entry of their own.
+void collectReferenced(const fs::path& list, std::set<fs::path>& referenced) {
+    std::ifstream in(list, std::ios::binary);
+    std::string line;
+    bool cue = lower(list.extension().wstring()) == L".cue";
+    while (std::getline(in, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        std::string name;
+        if (cue) {
+            auto a = line.find('"'), b = line.rfind('"');
+            if (line.find("FILE") == std::string::npos || a == std::string::npos || b <= a) continue;
+            name = line.substr(a + 1, b - a - 1);
+        } else {
+            if (line.empty() || line[0] == '#') continue;
+            name = line;
+        }
+        int n = MultiByteToWideChar(CP_UTF8, 0, name.c_str(), int(name.size()), nullptr, 0);
+        std::wstring wide(size_t(n), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, name.c_str(), int(name.size()), wide.data(), n);
+        std::error_code ec;
+        referenced.insert(fs::weakly_canonical(list.parent_path() / wide, ec));
+    }
 }
 
 }  // namespace
@@ -102,13 +119,12 @@ int writePlaylists(const Config& c) {
         fs::path dir = roms / sys.folder;
         fs::path core = retro / L"cores" / (std::wstring(sys.core) + L"_libretro.dll");
         std::vector<fs::path> games;
-        std::set<fs::path> m3u, cue;
+        std::set<fs::path> referenced;
         if (fs::is_directory(dir, ec)) {
             for (auto& e : fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied, ec)) {
                 if (!e.is_regular_file(ec)) continue;
                 auto ext = lower(e.path().extension().wstring());
-                if (ext == L".m3u") m3u.insert(e.path().parent_path());
-                if (ext == L".cue") cue.insert(e.path().parent_path());
+                if (ext == L".m3u" || ext == L".cue") collectReferenced(e.path(), referenced);
                 if (!sys.extensions.count(ext)) continue;
                 if (lower(e.path().filename().wstring()) == L"prboom.wad") continue;  // engine data, not a game
                 games.push_back(e.path());
@@ -121,7 +137,8 @@ int writePlaylists(const Config& c) {
                            "  \"sort_mode\": 0,\n  \"items\": [";
         int count = 0;
         for (auto& g : games) {
-            if (skipDiscFile(g, m3u, cue)) continue;
+            std::error_code ec2;
+            if (referenced.count(fs::weakly_canonical(g, ec2))) continue;
             body += std::string(count ? "," : "") + "\n    {\n      \"path\": \"" + json(utf8(g.wstring())) + "\",\n      \"label\": \"" +
                     json(utf8(g.stem().wstring())) + "\",\n      \"core_path\": \"" + corePath + "\",\n      \"core_name\": \"" + coreName +
                     "\",\n      \"crc32\": \"DETECT\",\n      \"db_name\": \"" + json(sys.playlist) + ".lpl\"\n    }";
