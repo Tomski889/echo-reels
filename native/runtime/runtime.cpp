@@ -258,6 +258,37 @@ void gate(Context& c, void* cs) {
     }
 }
 
+// Touch hitboxes follow the tablet size: CR15ButtonInteractCR rows hold each poke
+// box's centre (+0x80 x, +0x84 y) and half size (+0x9c, +0xa0) in metres from the
+// canvas's top-left corner, plus a bounds centre (+0xb8, +0xbc). The button system
+// reads the rows every update, so scaling them in memory moves the touch areas.
+std::unordered_map<P, std::array<float, 6>> hitboxOriginal;  // stock values per row (never re-read)
+std::map<void*, float> hitboxScaleOf;                         // scale last applied per button resource
+void scaleHitboxes(void* cs) {
+    auto resource = at<void*>(cs, 0xd0);
+    float k = tablet::appliedScale();
+    auto known = hitboxScaleOf.find(resource);
+    if (!resource || (known != hitboxScaleOf.end() && known->second == k) || (known == hitboxScaleOf.end() && k == 1.f)) return;
+    constexpr unsigned OFF[6] = {0x80, 0x84, 0x9c, 0xa0, 0xb8, 0xbc};
+    auto rows = at<P>(resource, 0);
+    U count = at<U>(resource, 0x30);
+    unsigned n = 0;
+    for (U i = 0; i < count && i < 8192; i++) {
+        P r = rows + i * 296;
+        if (at<U>(r, 8) != TABLET_ACTOR) continue;
+        auto it = hitboxOriginal.find(r);
+        if (it == hitboxOriginal.end()) {
+            std::array<float, 6> o;
+            for (int j = 0; j < 6; j++) o[j] = at<float>(r, OFF[j]);
+            it = hitboxOriginal.emplace(r, o).first;
+        }
+        for (int j = 0; j < 6; j++) at<float>(r, OFF[j]) = it->second[j] * k;
+        n++;
+    }
+    if (n) logf("tablet: %u touch areas scaled x%.2f", n, k);
+    hitboxScaleOf[resource] = k;
+}
+
 void refreshSelection() {
     bool any = false;
     int mode = 0;
@@ -306,6 +337,7 @@ void buttonTick(void* cs) {
     for (auto p : retry) remember(p);
     auto& ctx = contexts[at<void*>(cs, 0x80)];
     gate(ctx, cs);
+    if (ctx.views[0].p) scaleHitboxes(cs);  // only the button system that owns the tablet
     render(ctx);
 }
 
