@@ -71,7 +71,11 @@ Start Echo VR, open the hand tablet and press **PLAY**, left of the stock tabs. 
 
 To uninstall, close Echo VR and run `tools\install.py restore`. It puts back the original manifest (hash-checked) and `echoloader.json`, and removes the package and plugin files. Backups are kept in `backups\`.
 
-Re-run `prepare_balatro.py` after Steam updates Balatro. Add ROMs under `apps\roms\` (RetroArch's *Load Content* starts there) and extra cores through RetroArch's Online Updater.
+After changing code, run `build.cmd` and then `tools\install.py update`. That refreshes the plugin, host and config without touching the tablet data. Re-run `prepare_balatro.py` after Steam updates Balatro.
+
+Put your ROMs in `apps\roms\<system>\` (see [docs/ROMS.md](docs/ROMS.md)); the playlists rebuild every time RetroArch opens. Video folders are set by `movies=` in `plugins\EchoArcade\arcade.ini`.
+
+**Plex privacy:** linking stores a Plex token in `%LOCALAPPDATA%\EchoArcade\plex.json`, never in the repo or the logs. *Unlink Plex* at the bottom of the Plex library list removes it. Streams go straight from your server to this PC.
 
 ## Test without a headset
 
