@@ -18,6 +18,12 @@ struct Rect {
 };
 
 void hostLog(const char* format, ...);
+
+// Headset audio (audio.cpp). patterns: '|'-separated name fragments, best first; "default" = off.
+struct AudioTarget { std::wstring id, name; };
+AudioTarget findAudioDevice(const std::wstring& patterns);
+bool routeProcessAudio(DWORD pid, const AudioTarget& target);  // that process's default output
+extern thread_local long lastAudioError;                        // HRESULT of the last failed route
 std::wstring localAppData();  // %LOCALAPPDATA%, even when the variable is missing
 
 // ---- configuration (EchoArcade\arcade.ini, written by the installer) ----
@@ -32,6 +38,7 @@ struct Config {
     std::wstring mpv;                 // mpv.exe
     std::vector<std::wstring> movies; // video folders (arcade.ini movies=, ; separated)
     std::wstring windowMode;          // "desktop" (default) or "offscreen"
+    std::wstring audioDevice;         // output device name fragments ('|' separated), "default" = Windows default
     int balatroPort = 55410, retroCmdPort = 55355, retroPadPort = 55400;
 };
 Config loadConfig();

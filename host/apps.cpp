@@ -1,5 +1,6 @@
 #include "apps.h"
 #include <ws2tcpip.h>
+#include <objbase.h>
 #include <cstdio>
 #include <thread>
 #include <algorithm>
@@ -101,6 +102,7 @@ bool Session::launch(AppId id, const std::wstring& target, double startSeconds) 
     kill();
     id_ = id;
     std::wstring exe, args, cwd;
+    AudioTarget audio = findAudioDevice(config_.audioDevice);
     auto setEnv = [](const wchar_t* k, const std::wstring& v) { SetEnvironmentVariableW(k, v.empty() ? nullptr : v.c_str()); };
     setEnv(L"ECHO_ARCADE_PORT", L"");
     if (id == AppId::BalatroSteam || id == AppId::BalatroPortmaster) {
@@ -127,6 +129,7 @@ bool Session::launch(AppId id, const std::wstring& target, double startSeconds) 
         args = L"\"" + target + L"\" --input-ipc-server=" + MpvControl::pipeName() +
                L" --force-window=immediate --no-border --geometry=" + std::to_wstring(SCREEN_W) + L"x" + std::to_wstring(SCREEN_H) +
                L"+0+0 --keep-open=no --idle=no --hwdec=auto-safe --osd-level=1 --title=EchoArcadeMovie --volume=80 --start=" + start;
+        if (!audio.id.empty()) args += L" --audio-device=wasapi/" + audio.id;
     } else {
         exe = config_.retroarch;
         cwd = folderOf(exe);
@@ -141,9 +144,27 @@ bool Session::launch(AppId id, const std::wstring& target, double startSeconds) 
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_SHOWNOACTIVATE;
     PROCESS_INFORMATION pi{};
-    if (!CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si, &pi)) {
+    if (!CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, cwd.c_str(), &si, &pi)) {
         hostLog("launch failed (%lu): %ls", GetLastError(), cmd.c_str());
         return false;
+    }
+    // Route its sound to the headset. Windows refuses (E_INVALIDARG) until the process
+    // has started, and moves any sound it already plays when the route is set.
+    ResumeThread(pi.hThread);
+    if (audio.id.empty()) hostLog("audio: no device matching \"%ls\"; using the Windows default", config_.audioDevice.c_str());
+    else {
+        DWORD pid = pi.dwProcessId;
+        std::thread([pid, audio] {
+            (void)CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            bool ok = false;
+            for (int attempt = 0; attempt < 20 && !ok; attempt++) {
+                Sleep(attempt ? 250 : 50);
+                ok = routeProcessAudio(pid, audio);
+            }
+            if (ok) hostLog("audio: pid %lu -> %ls", pid, audio.name.c_str());
+            else hostLog("audio: could not route pid %lu (0x%08lx); it plays on the Windows default", pid, lastAudioError);
+            CoUninitialize();
+        }).detach();
     }
     CloseHandle(pi.hThread);
     process_ = pi.hProcess;

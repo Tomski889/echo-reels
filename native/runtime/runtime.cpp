@@ -9,6 +9,7 @@
 #include "../vendor/minhook/include/MinHook.h"
 #include "d3d12_stream.h"
 #include "ovr_tweaks.h"
+#include "tablet_scale.h"
 #include "log.h"
 #include <algorithm>
 #include <array>
@@ -120,6 +121,7 @@ void remember(void* p, unsigned depth = 0) {
         contexts[gs].views[kind] = View{p};
         canvases[p] = {gs, kind};
         logf("canvas kind=%u gs=%p ptr=%p", kind, gs, p);
+        if (kind == 0) tablet::tabletPresent(true);
         remember(at<void*>(p, 0x378), depth + 1);
         return;
     }
@@ -287,7 +289,7 @@ void unloadLocked(void* p) {
     unsigned kind = it->second.second;
     auto& ctx = contexts[gs];
     if (ctx.views[kind].p == p) ctx.views[kind] = View{};
-    if (kind == 0) { ctx.page = Page::Stock; releaseAllTouches(gs); }
+    if (kind == 0) { ctx.page = Page::Stock; releaseAllTouches(gs); tablet::tabletPresent(false); }
     if (kind == 1) ctx.navState = -1;
     if (kind == 2) ctx.statusShown = -1, ctx.statusText.clear();
     canvases.erase(it);
@@ -386,6 +388,7 @@ void heartbeatLoop() {
             shared->gameHeartbeat = LONG64(now);
             shared->pageVisible = visible;
             shared->pageMode = pageMode;
+            if (shared->tabletScale > 0) tablet::request(shared->tabletScale / 1000.f);
         }
         stream::setVisible(visible);
     }
@@ -439,6 +442,7 @@ void start(HMODULE self) {
             FreeEnvironmentStringsW(block);
         }
         tweaks::start(pluginDir);  // independent of the tablet: must beat the game's first Oculus FOV query
+        tablet::start(pluginDir);
         // Hooks and the probe D3D12 device are created off the loader thread.
         HANDLE t = CreateThread(nullptr, 0, [](LPVOID) -> DWORD { initialize(); return 0; }, nullptr, 0, nullptr);
         if (t) CloseHandle(t);

@@ -65,6 +65,9 @@ Config loadConfig() {
     wchar_t mode[64];
     GetPrivateProfileStringW(L"host", L"window_mode", L"desktop", mode, 64, ini.c_str());
     c.windowMode = mode;
+    wchar_t audio[256];
+    GetPrivateProfileStringW(L"host", L"audio_device", L"Oculus Virtual Audio|Meta Quest|Rift", audio, 256, ini.c_str());
+    c.audioDevice = audio;
     c.balatroPort = GetPrivateProfileIntW(L"host", L"balatro_port", c.balatroPort, ini.c_str());
     c.retroCmdPort = GetPrivateProfileIntW(L"host", L"retroarch_command_port", c.retroCmdPort, ini.c_str());
     c.retroPadPort = GetPrivateProfileIntW(L"host", L"retroarch_pad_port", c.retroPadPort, ini.c_str());

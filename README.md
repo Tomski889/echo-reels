@@ -25,7 +25,9 @@ A new **Arcade** tab (gamepad icon) on Echo VR's hand tablet that runs **Balatro
 | Movies | Your video folders (`apps\movies` and Windows *Videos* by default) in mpv | Tap for controls: ±10/30 s, pause, seek bar, volume, subtitles, audio track |
 | Plex | Movies and TV from your Plex server, direct play in mpv; resume points sync back to Plex | Link once with a code at plex.tv/link, then browse libraries, *Continue Watching*, shows, seasons and episodes |
 
-Tap **≡** (Balatro) or **HOME** (RetroArch) for Resume / Quit to launcher. The **gear** tab is **Settings**: tablet size and view (FOV) sliders, saved to `echo_tweaks.ini`.
+Tap **≡** (Balatro) or **HOME** (RetroArch) for Resume / Quit to launcher. The **gear** tab is **Settings**: tablet size (0.5x to 4x, applied live by rescaling the tablet's own transform; experimental) and view (FOV) sliders, saved to `echo_tweaks.ini`.
+
+**Sound** from the apps goes to the VR headset (Link / Air Link "Oculus Virtual Audio Device"), not the Windows default: each app gets its own output device, the same per-app setting as Windows' volume mixer. Change it with `audio_device=` in `arcade.ini` (`default` = Windows default).
 
 The six tab icons are centred on the bar; the Arcade and Settings icons are drawn at build time from your game's own tab art, so they match the stock ones. See **[docs/ROMS.md](docs/ROMS.md)** for ROM folders and BIOS files.
 

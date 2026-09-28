@@ -74,6 +74,9 @@ movies={apps / 'movies'};%USERPROFILE%\\Videos
 ; desktop: game windows sit at the top-left of your monitor, behind other windows
 ; offscreen: moved off the visible desktop (some apps throttle when off screen)
 window_mode=desktop
+; where the apps' sound goes: output device name fragments separated by |, first match
+; wins (default: the Link / Air Link headset). "default" = the Windows default device.
+audio_device=Oculus Virtual Audio|Meta Quest|Rift
 balatro_port=55410
 retroarch_command_port=55355
 retroarch_pad_port=55400
