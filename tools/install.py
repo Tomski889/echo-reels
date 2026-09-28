@@ -1,0 +1,183 @@
+"""Install / restore Echo Arcade in an Echo VR folder. Close Echo VR first.
+
+    python tools/install.py status
+    python tools/install.py install     # builds the tab from your manifest, backs up, installs
+    python tools/install.py restore     # puts every original file back
+    python tools/install.py configure   # (dev) write dist/EchoArcade/arcade.ini only
+
+What install changes (all backed up under EchoArcade/backups/<time>/):
+  _data/.../manifests/48037dc70b0ecab2      patched manifest (adds 6 tablet resources)
+  _data/.../packages/48037dc70b0ecab2_N     new package with those resources
+  bin/win10/echoloader.json                 adds {"file": "EchoArcade.dll"}
+  bin/win10/plugins/EchoArcade.dll          runtime plugin
+  bin/win10/plugins/EchoArcade/             ArcadeHost.exe + arcade.ini
+"""
+import argparse
+import hashlib
+import json
+import shutil
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_GAME = ROOT.parent / 'ready-at-dawn-echo-arena'
+STATE = ROOT / 'install_state.json'
+MID = '48037dc70b0ecab2'
+EXE_TIMESTAMP, EXE_SIZE = 1683152886, 35852288
+
+
+def sha(path: Path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def paths(game: Path):
+    data = game / '_data/5932408047/rad15/win10'
+    bin_ = game / 'bin/win10'
+    return dict(manifest=data / 'manifests' / MID, packages=data / 'packages', bin=bin_,
+                loader=bin_ / 'echoloader.json', plugins=bin_ / 'plugins')
+
+
+def check_game(game: Path):
+    exe = game / 'bin/win10/echovr.exe'
+    if not exe.exists():
+        raise SystemExit(f'echovr.exe not found under {game}')
+    d = exe.read_bytes()[:4096]
+    pe = struct.unpack_from('<I', d, 0x3c)[0]
+    ts, size = struct.unpack_from('<I', d, pe + 8)[0], struct.unpack_from('<I', d, pe + 24 + 56)[0]
+    if (ts, size) != (EXE_TIMESTAMP, EXE_SIZE):
+        raise SystemExit(f'Unsupported echovr.exe build (timestamp {ts}); the runtime addresses are for {EXE_TIMESTAMP}.')
+    out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq echovr.exe'], capture_output=True, text=True).stdout
+    if 'echovr.exe' in out.lower():
+        raise SystemExit('Echo VR is running. Close it first.')
+
+
+def write_ini(target: Path):
+    apps = ROOT / 'apps'
+    ini = f"""; Echo Arcade host configuration (written by tools/install.py)
+[paths]
+love={apps / 'love/love-11.5-win64/love.exe'}
+balatro_steam={apps / 'balatro/steam'}
+balatro_portmaster={apps / 'balatro/portmaster'}
+retroarch={apps / 'retroarch/retroarch.exe'}
+doom_core={apps / 'retroarch/cores/prboom_libretro.dll'}
+doom_wad={apps / 'roms/doom/doom1.wad'}
+roms={apps / 'roms'}
+
+[host]
+; desktop: game windows sit at the top-left of your monitor, behind other windows
+; offscreen: moved off the visible desktop (some apps throttle when off screen)
+window_mode=desktop
+balatro_port=55410
+retroarch_command_port=55355
+retroarch_pad_port=55400
+"""
+    target.mkdir(parents=True, exist_ok=True)
+    (target / 'arcade.ini').write_text(ini, encoding='utf-8')
+
+
+def load_loader(p: Path):
+    return json.loads(p.read_text(encoding='utf-8'))
+
+
+def install(game: Path):
+    check_game(game)
+    if STATE.exists():
+        raise SystemExit('Already installed (install_state.json exists). Run restore first.')
+    p = paths(game)
+    for f in (ROOT / 'dist/EchoArcade.dll', ROOT / 'dist/EchoArcade/ArcadeHost.exe'):
+        if not f.exists():
+            raise SystemExit(f'{f} missing: run build.cmd first')
+    sys.path.insert(0, str(ROOT / 'tools'))
+    import os
+    os.environ['ECHOVR_GAME'] = str(game)
+    import build_arcade_tab
+    meta = build_arcade_tab.build()
+    if meta['base_manifest_sha256'] != sha(p['manifest']):
+        raise SystemExit('Manifest changed during build; try again.')
+    package = ROOT / 'build/tab/packages' / meta['package']
+    if (p['packages'] / meta['package']).exists():
+        raise SystemExit(f'{meta["package"]} already exists in the game; refusing to overwrite it.')
+
+    backup = ROOT / 'backups' / time.strftime('%Y%m%d-%H%M%S')
+    backup.mkdir(parents=True)
+    shutil.copy2(p['manifest'], backup / MID)
+    shutil.copy2(p['loader'], backup / 'echoloader.json')
+
+    shutil.copy2(package, p['packages'] / meta['package'])
+    shutil.copy2(ROOT / 'build/tab/manifests' / MID, p['manifest'])
+    p['plugins'].mkdir(exist_ok=True)
+    shutil.copy2(ROOT / 'dist/EchoArcade.dll', p['plugins'] / 'EchoArcade.dll')
+    host_dir = p['plugins'] / 'EchoArcade'
+    host_dir.mkdir(exist_ok=True)
+    shutil.copy2(ROOT / 'dist/EchoArcade/ArcadeHost.exe', host_dir / 'ArcadeHost.exe')
+    write_ini(host_dir)
+    loader = load_loader(p['loader'])
+    plugins = loader.setdefault('plugins', [])
+    if not any(e.get('file', '').lower() == 'echoarcade.dll' for e in plugins):
+        plugins.append({'file': 'EchoArcade.dll'})
+    p['loader'].write_text(json.dumps(loader, indent=4) + '\n', encoding='utf-8')
+
+    STATE.write_text(json.dumps(dict(game=str(game), backup=str(backup), package=meta['package'],
+                                     manifest_sha256=sha(p['manifest']), original_manifest_sha256=meta['base_manifest_sha256']), indent=2))
+    print(f'Installed. Backups in {backup}')
+    print('Start Echo VR normally, open the hand tablet and press PLAY (left of the tabs).')
+
+
+def restore(game: Path, force: bool):
+    check_game(game)
+    if not STATE.exists():
+        raise SystemExit('Nothing to restore (no install_state.json).')
+    state = json.loads(STATE.read_text())
+    p = paths(Path(state['game']))
+    backup = Path(state['backup'])
+    current = sha(p['manifest'])
+    if current != state['manifest_sha256'] and not force:
+        raise SystemExit('The manifest was changed after Echo Arcade installed (another mod or a game update?). '
+                         'Re-run with --force to restore our backup anyway.')
+    shutil.copy2(backup / MID, p['manifest'])
+    pkg = p['packages'] / state['package']
+    if pkg.exists():
+        pkg.unlink()
+    loader = load_loader(p['loader'])
+    loader['plugins'] = [e for e in loader.get('plugins', []) if e.get('file', '').lower() != 'echoarcade.dll']
+    p['loader'].write_text(json.dumps(loader, indent=4) + '\n', encoding='utf-8')
+    for f in (p['plugins'] / 'EchoArcade.dll',):
+        if f.exists():
+            f.unlink()
+    shutil.rmtree(p['plugins'] / 'EchoArcade', ignore_errors=True)
+    ok = sha(p['manifest']) == state['original_manifest_sha256']
+    STATE.unlink()
+    print('Restored original manifest' + (' (hash verified).' if ok else ' (WARNING: hash differs from the pre-install manifest).'))
+
+
+def status(game: Path):
+    p = paths(game)
+    print('game:', game)
+    print('installed:', STATE.exists())
+    print('plugin present:', (p['plugins'] / 'EchoArcade.dll').exists())
+    print('loader entry:', any(e.get('file', '').lower() == 'echoarcade.dll' for e in load_loader(p['loader']).get('plugins', [])))
+    print('manifest sha256:', sha(p['manifest']))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('action', choices=['install', 'restore', 'status', 'configure'])
+    ap.add_argument('--game', type=Path, default=DEFAULT_GAME)
+    ap.add_argument('--force', action='store_true')
+    a = ap.parse_args()
+    if a.action == 'install':
+        install(a.game)
+    elif a.action == 'restore':
+        restore(a.game, a.force)
+    elif a.action == 'status':
+        status(a.game)
+    else:
+        write_ini(ROOT / 'dist/EchoArcade')
+        print('wrote', ROOT / 'dist/EchoArcade/arcade.ini')
+
+
+if __name__ == '__main__':
+    main()

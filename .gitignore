@@ -1,0 +1,10 @@
+# Downloads, third-party apps and anything derived from games you own
+/apps/
+/vendor/
+/build/
+/dist/
+/backups/
+install_state.json
+.venv/
+__pycache__/
+*.pyc
