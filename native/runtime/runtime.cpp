@@ -8,6 +8,7 @@
 #include "../generated/arcade_tab.h"
 #include "../vendor/minhook/include/MinHook.h"
 #include "d3d12_stream.h"
+#include "ovr_tweaks.h"
 #include "log.h"
 #include <algorithm>
 #include <array>
@@ -401,6 +402,7 @@ void start(HMODULE self) {
         pluginDir = path;
         pluginDir.resize(pluginDir.find_last_of(L"\\/"));
         logf("EchoArcade loaded from %ls", path);
+        tweaks::start(pluginDir);  // independent of the tablet: must beat the game's first Oculus FOV query
         // Hooks and the probe D3D12 device are created off the loader thread.
         HANDLE t = CreateThread(nullptr, 0, [](LPVOID) -> DWORD { initialize(); return 0; }, nullptr, 0, nullptr);
         if (t) CloseHandle(t);

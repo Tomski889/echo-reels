@@ -134,12 +134,44 @@ def install(game: Path):
     print('Start Echo VR normally, open the hand tablet and press PLAY (left of the tabs).')
 
 
+def write_tweaks(p):
+    """echo_tweaks.ini is yours to edit: created once, never overwritten.
+
+    Seeds the FOV from EchoVR-Haptics' haptics_config.txt if that is present.
+    """
+    target = p['plugins'] / 'EchoArcade' / 'echo_tweaks.ini'
+    if target.exists():
+        return
+    x = y = 1.0
+    old = p['bin'] / 'haptics_config.txt'
+    if old.exists():
+        for line in old.read_text(errors='ignore').splitlines():
+            key, _, value = line.partition('=')
+            key = key.strip()
+            try:
+                if key in ('FovMultiplierX', 'FovMultiplier'):
+                    x = float(value)
+                if key in ('FovMultiplierY', 'FovMultiplier'):
+                    y = float(value)
+            except ValueError:
+                pass
+    target.write_text(f"""; Echo VR tweaks (read when Echo starts; edit freely, updates keep this file)
+[fov]
+; Eye field-of-view multipliers, 0.5 to 2.0 (1.0 = normal). Widens the view the
+; game renders: visible in the desktop mirror / recordings.
+x={x:.2f}
+y={y:.2f}
+""", encoding='utf-8')
+    print(f'Created {target.name} (fov x={x:.2f} y={y:.2f})')
+
+
 def copy_binaries(p):
     shutil.copy2(ROOT / 'dist/EchoArcade.dll', p['plugins'] / 'EchoArcade.dll')
     host_dir = p['plugins'] / 'EchoArcade'
     host_dir.mkdir(exist_ok=True)
     shutil.copy2(ROOT / 'dist/EchoArcade/ArcadeHost.exe', host_dir / 'ArcadeHost.exe')
     write_ini(host_dir)
+    write_tweaks(p)
 
 
 def update(game: Path):

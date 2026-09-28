@@ -75,6 +75,10 @@ After changing code, run `build.cmd` and then `tools\install.py update`. That re
 
 Put your ROMs in `apps\roms\<system>\` (see [docs/ROMS.md](docs/ROMS.md)); the playlists rebuild every time RetroArch opens. Video folders are set by `movies=` in `plugins\EchoArcade\arcade.ini`.
 
+**Adding a ROM set:** `tools\import_roms.py "<set>.zip" <system>` unpacks a set (including zips nested inside it) into `appsoms\<system>\`.
+
+**FOV tweak:** `plugins\EchoArcade\echo_tweaks.ini` sets `[fov] x=` / `y=` multipliers (0.5 to 2.0), the same idea as EchoVR-Haptics' FovMultiplier. The install seeds it from an old `haptics_config.txt` if present and never overwrites your edits.
+
 **Plex privacy:** linking stores a Plex token in `%LOCALAPPDATA%\EchoArcade\plex.json`, never in the repo or the logs. *Unlink Plex* at the bottom of the Plex library list removes it. Streams go straight from your server to this PC.
 
 ## Test without a headset
