@@ -56,7 +56,7 @@ public:
     void unlink();
 
 private:
-    std::string get(const std::wstring& url, const char* method = "GET");
+    std::string get(const std::wstring& url, const char* method = "GET", int timeoutSeconds = 8);
     void save();
     std::string clientId_, token_;
     std::wstring server_, serverName_;

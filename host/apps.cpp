@@ -40,8 +40,11 @@ void writeRetroConfig(const Config& c, const std::wstring& path) {
         "input_autodetect_enable = \"true\"\nmenu_show_advanced_settings = \"false\"\n"
         "quit_press_twice = \"false\"\nconfirm_quit = \"false\"\n"
         "menu_swap_ok_cancel_buttons = \"false\"\n"  // A (right) confirms, B (bottom) goes back, as labelled
-        "rgui_browser_directory = \"%ls\"\n",
-        c.retroCmdPort, c.retroPadPort, c.roms.c_str());
+        "rgui_browser_directory = \"%ls\"\n"
+        // apps\retroarch\logs\retroarch.log: why a game did or didn't load
+        "log_verbosity = \"true\"\nlog_to_file = \"true\"\nlog_to_file_timestamp = \"false\"\nlog_dir = \"%ls\\logs\"\n"
+        "frontend_log_level = \"1\"\nlibretro_log_level = \"1\"\n",
+        c.retroCmdPort, c.retroPadPort, c.roms.c_str(), folderOf(c.retroarch).c_str());
     fclose(f);
 }
 

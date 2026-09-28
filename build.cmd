@@ -22,5 +22,11 @@ if errorlevel 1 exit /b 1
 
 cl %CFLAGS% tests\ipc_test.cpp /Fo:build\obj\ /Fe:build\ipc_test.exe
 if errorlevel 1 exit /b 1
+cl %CFLAGS% tests\tablet_scan_test.cpp native\runtime\tablet_scale.cpp /Fo:build\obj\ /Fe:build\tablet_scan_test.exe
+if errorlevel 1 exit /b 1
+rem tests log under build\ instead of the real %LOCALAPPDATA%\EchoArcade
+set "LOCALAPPDATA=%~dp0build"
 build\ipc_test.exe
+if errorlevel 1 exit /b 1
+build\tablet_scan_test.exe
 exit /b %errorlevel%

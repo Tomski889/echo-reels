@@ -81,7 +81,7 @@ void Plex::save() {
 
 void Plex::unlink() { token_.clear(); server_.clear(); serverToken_.clear(); save(); }
 
-std::string Plex::get(const std::wstring& url, const char* method) {
+std::string Plex::get(const std::wstring& url, const char* method, int timeoutSeconds) {
     try {
         static HttpClient client;
         HttpRequestMessage req(strcmp(method, "POST") == 0 ? HttpMethod::Post() : HttpMethod::Get(), Uri(url));
@@ -96,7 +96,11 @@ std::string Plex::get(const std::wstring& url, const char* method) {
         const std::string& token = plexTv ? token_ : serverToken_;
         if (!token.empty()) h.TryAppendWithoutValidation(L"X-Plex-Token", to_hstring(token));
         auto op = client.SendRequestAsync(req);
-        if (op.wait_for(8s) != AsyncStatus::Completed) { op.Cancel(); return {}; }
+        if (op.wait_for(std::chrono::seconds(timeoutSeconds)) != AsyncStatus::Completed) {
+            op.Cancel();
+            hostLog("plex: no answer in %d s (%ls)", timeoutSeconds, Uri(url).Host().c_str());
+            return {};
+        }
         auto resp = op.GetResults();
         if (!resp.IsSuccessStatusCode()) {
             hostLog("plex: HTTP %d from %ls", int(resp.StatusCode()), Uri(url).Host().c_str());
@@ -134,27 +138,46 @@ bool Plex::pollLink(const std::string& pinId) {
 bool Plex::findServer(std::wstring& error) {
     auto body = get(L"https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1");
     if (body.empty()) { error = L"Could not reach plex.tv"; return false; }
+    // Candidates, fastest first. Many routers refuse to resolve *.plex.direct names that
+    // point at a LAN address (DNS rebinding protection), so the server's plain LAN
+    // address comes first; then its https names, then the remote address, then the relay.
+    struct Candidate { std::wstring uri; std::string token, kind; std::wstring name; };
+    std::vector<Candidate> candidates[4];
     try {
-        auto list = JsonArray::Parse(to_hstring(body));
-        for (int pass = 0; pass < 3; pass++) {  // local, then remote, then relay
-            for (auto v : list) {
-                auto r = v.GetObject();
-                if (str(r, L"provides").find("server") == std::string::npos) continue;
-                for (auto cv : arr(r, L"connections")) {
-                    auto c = cv.GetObject();
-                    bool local = c.GetNamedBoolean(L"local", false), relay = c.GetNamedBoolean(L"relay", false);
-                    if ((pass == 0 && !local) || (pass == 1 && (local || relay)) || (pass == 2 && !relay)) continue;
-                    server_ = w(str(c, L"uri"));
-                    serverToken_ = str(r, L"accessToken");
-                    if (!get(server_ + L"/identity").empty()) {
-                        serverName_ = w(str(r, L"name"));
-                        hostLog("plex: using server '%ls' (%s)", serverName_.c_str(), local ? "local" : relay ? "relay" : "remote");
-                        return true;
-                    }
-                }
+        for (auto v : JsonArray::Parse(to_hstring(body))) {
+            auto r = v.GetObject();
+            if (str(r, L"provides").find("server") == std::string::npos) continue;
+            std::string token = str(r, L"accessToken");
+            std::wstring name = w(str(r, L"name"));
+            for (auto cv : arr(r, L"connections")) {
+                auto c = cv.GetObject();
+                bool local = c.GetNamedBoolean(L"local", false), relay = c.GetNamedBoolean(L"relay", false);
+                std::wstring uri = w(str(c, L"uri"));
+                if (local) {
+                    std::string address = str(c, L"address"), port = str(c, L"port");
+                    if (!address.empty() && !port.empty() && address.find(':') == std::string::npos)
+                        candidates[0].push_back({w("http://" + address + ":" + port), token, "LAN", name});
+                    candidates[1].push_back({uri, token, "local https", name});
+                } else candidates[relay ? 3 : 2].push_back({uri, token, relay ? "relay" : "remote", name});
             }
         }
-    } catch (...) {}
+    } catch (hresult_error const& e) {
+        hostLog("plex: could not read the server list (0x%08x)", unsigned(e.code()));
+    }
+    size_t tried = 0;
+    for (auto& group : candidates)
+        for (auto& c : group) {
+            tried++;
+            server_ = c.uri;
+            serverToken_ = c.token;
+            if (!get(server_ + L"/identity", "GET", 5).empty()) {
+                serverName_ = c.name;
+                hostLog("plex: using server '%ls' (%s)", serverName_.c_str(), c.kind.c_str());
+                return true;
+            }
+            hostLog("plex: '%ls' not reachable via %s", c.name.c_str(), c.kind.c_str());
+        }
+    if (!tried) hostLog("plex: this account lists no servers");
     server_.clear();
     error = L"No Plex server reachable from this PC";
     return false;
