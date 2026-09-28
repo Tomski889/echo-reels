@@ -44,6 +44,15 @@ Config loadConfig() {
     c.doomCore = get(L"doom_core");
     c.doomWad = get(L"doom_wad");
     c.roms = get(L"roms");
+    c.mpv = get(L"mpv");
+    std::wstring movies = get(L"movies"), part;
+    for (size_t i = 0; i <= movies.size(); i++) {
+        if (i == movies.size() || movies[i] == L';') {
+            wchar_t expanded[MAX_PATH];
+            if (!part.empty() && ExpandEnvironmentStringsW(part.c_str(), expanded, MAX_PATH)) c.movies.push_back(expanded);
+            part.clear();
+        } else part += movies[i];
+    }
     wchar_t mode[64];
     GetPrivateProfileStringW(L"host", L"window_mode", L"desktop", mode, 64, ini.c_str());
     c.windowMode = mode;

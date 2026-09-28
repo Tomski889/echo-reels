@@ -2,6 +2,7 @@
 
     python tools/install.py status
     python tools/install.py install     # builds the tab from your manifest, backs up, installs
+    python tools/install.py update      # after build.cmd: refresh plugin, host and arcade.ini only
     python tools/install.py restore     # puts every original file back
     python tools/install.py configure   # (dev) write dist/EchoArcade/arcade.ini only
 
@@ -65,6 +66,9 @@ retroarch={apps / 'retroarch/retroarch.exe'}
 doom_core={apps / 'retroarch/cores/prboom_libretro.dll'}
 doom_wad={apps / 'roms/doom/doom1.wad'}
 roms={apps / 'roms'}
+mpv={apps / 'mpv/mpv.exe'}
+; video folders for MOVIES, separated by ;  (environment variables allowed)
+movies={apps / 'movies'};%USERPROFILE%\\Videos
 
 [host]
 ; desktop: game windows sit at the top-left of your monitor, behind other windows
@@ -109,11 +113,7 @@ def install(game: Path):
     shutil.copy2(package, p['packages'] / meta['package'])
     shutil.copy2(ROOT / 'build/tab/manifests' / MID, p['manifest'])
     p['plugins'].mkdir(exist_ok=True)
-    shutil.copy2(ROOT / 'dist/EchoArcade.dll', p['plugins'] / 'EchoArcade.dll')
-    host_dir = p['plugins'] / 'EchoArcade'
-    host_dir.mkdir(exist_ok=True)
-    shutil.copy2(ROOT / 'dist/EchoArcade/ArcadeHost.exe', host_dir / 'ArcadeHost.exe')
-    write_ini(host_dir)
+    copy_binaries(p)
     loader = load_loader(p['loader'])
     plugins = loader.setdefault('plugins', [])
     if not any(e.get('file', '').lower() == 'echoarcade.dll' for e in plugins):
@@ -124,6 +124,22 @@ def install(game: Path):
                                      manifest_sha256=sha(p['manifest']), original_manifest_sha256=meta['base_manifest_sha256']), indent=2))
     print(f'Installed. Backups in {backup}')
     print('Start Echo VR normally, open the hand tablet and press PLAY (left of the tabs).')
+
+
+def copy_binaries(p):
+    shutil.copy2(ROOT / 'dist/EchoArcade.dll', p['plugins'] / 'EchoArcade.dll')
+    host_dir = p['plugins'] / 'EchoArcade'
+    host_dir.mkdir(exist_ok=True)
+    shutil.copy2(ROOT / 'dist/EchoArcade/ArcadeHost.exe', host_dir / 'ArcadeHost.exe')
+    write_ini(host_dir)
+
+
+def update(game: Path):
+    check_game(game)
+    if not STATE.exists():
+        raise SystemExit('Not installed yet: run install first.')
+    copy_binaries(paths(Path(json.loads(STATE.read_text())['game'])))
+    print('Updated EchoArcade.dll, ArcadeHost.exe and arcade.ini (tablet data unchanged).')
 
 
 def restore(game: Path, force: bool):
@@ -164,12 +180,14 @@ def status(game: Path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('action', choices=['install', 'restore', 'status', 'configure'])
+    ap.add_argument('action', choices=['install', 'update', 'restore', 'status', 'configure'])
     ap.add_argument('--game', type=Path, default=DEFAULT_GAME)
     ap.add_argument('--force', action='store_true')
     a = ap.parse_args()
     if a.action == 'install':
         install(a.game)
+    elif a.action == 'update':
+        update(a.game)
     elif a.action == 'restore':
         restore(a.game, a.force)
     elif a.action == 'status':

@@ -17,7 +17,7 @@ if errorlevel 1 exit /b 1
 cl %CFLAGS% /LD native\runtime\runtime.cpp native\runtime\d3d12_stream.cpp build\obj\buffer.obj build\obj\hook.obj build\obj\trampoline.obj build\obj\hde64.obj /Fo:build\obj\ /Fe:dist\EchoArcade.dll /link /IMPLIB:build\obj\EchoArcade.lib user32.lib
 if errorlevel 1 exit /b 1
 
-cl /nologo /O2 /MT /W4 /EHsc /std:c++20 /DUNICODE /D_UNICODE /wd4100 /wd4201 host\main.cpp host\canvas.cpp host\capture.cpp host\apps.cpp /Fo:build\obj\ /Fe:dist\EchoArcade\ArcadeHost.exe /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib d3d11.lib dxgi.lib ws2_32.lib windowsapp.lib dwmapi.lib shell32.lib
+cl /nologo /O2 /MT /W4 /EHsc /std:c++20 /DUNICODE /D_UNICODE /wd4100 /wd4201 host\main.cpp host\canvas.cpp host\capture.cpp host\apps.cpp host\playlists.cpp host\mpv.cpp host\plex.cpp /Fo:build\obj\ /Fe:dist\EchoArcade\ArcadeHost.exe /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib d3d11.lib dxgi.lib ws2_32.lib windowsapp.lib dwmapi.lib shell32.lib ole32.lib
 if errorlevel 1 exit /b 1
 
 cl %CFLAGS% tests\ipc_test.cpp /Fo:build\obj\ /Fe:build\ipc_test.exe

@@ -2,6 +2,7 @@
 #include <ws2tcpip.h>
 #include <cstdio>
 #include <thread>
+#include <algorithm>
 
 namespace {
 
@@ -37,6 +38,7 @@ void writeRetroConfig(const Config& c, const std::wstring& path) {
         "video_window_show_decorations = \"false\"\nmenu_mouse_enable = \"false\"\nmenu_pointer_enable = \"false\"\n"
         "input_autodetect_enable = \"true\"\nmenu_show_advanced_settings = \"false\"\n"
         "quit_press_twice = \"false\"\nconfirm_quit = \"false\"\n"
+        "menu_swap_ok_cancel_buttons = \"false\"\n"  // A (right) confirms, B (bottom) goes back, as labelled
         "rgui_browser_directory = \"%ls\"\n",
         c.retroCmdPort, c.retroPadPort, c.roms.c_str());
     fclose(f);
@@ -45,6 +47,18 @@ void writeRetroConfig(const Config& c, const std::wstring& path) {
 }  // namespace
 
 bool isRetro(AppId id) { return id == AppId::RetroArch || id == AppId::Doom; }
+bool isVideo(AppId id) { return id == AppId::Movies || id == AppId::Plex; }
+int writePlaylists(const Config& c);  // playlists.cpp
+
+// Keep secrets (Plex tokens in stream URLs) out of logs.
+static std::wstring redact(std::wstring s) {
+    for (size_t p = 0; (p = s.find(L"X-Plex-Token=", p)) != std::wstring::npos;) {
+        p += 13;
+        size_t e = s.find_first_of(L"&\" ", p);
+        s.replace(p, (e == std::wstring::npos ? s.size() : e) - p, L"***");
+    }
+    return s;
+}
 
 std::vector<AppInfo> listApps(const Config& c) {
     std::vector<AppInfo> apps;
@@ -61,6 +75,9 @@ std::vector<AppInfo> listApps(const Config& c) {
     std::wstring doomMissing = !exists(c.retroarch) ? L"RetroArch missing" :
                                !exists(c.doomCore) ? L"prboom core missing" : !exists(c.doomWad) ? L"doom1.wad missing" : L"";
     apps.push_back({AppId::Doom, L"DOOM", L"Shareware via RetroArch", doomMissing, rgb(200, 120, 40)});
+    std::wstring mpvMissing = exists(c.mpv) ? L"" : L"mpv missing - rerun setup_apps.py";
+    apps.push_back({AppId::Movies, L"MOVIES", L"Your video folders", mpvMissing, rgb(40, 170, 150)});
+    apps.push_back({AppId::Plex, L"PLEX", L"Your Plex server", mpvMissing, rgb(229, 160, 13)});
     return apps;
 }
 
@@ -76,11 +93,11 @@ Session::~Session() {
 }
 
 Rect Session::contentRect() const {
-    if (isRetro(id_)) return {RETRO_PANEL, 0, RETRO_PANEL + RETRO_W, RETRO_H};
+    if (isRetro(id_)) return {RETRO_PANEL, 0, RETRO_PANEL + RETRO_W, RETRO_H};  // movies and Balatro: full screen
     return {0, 0, SCREEN_W, SCREEN_H};
 }
 
-bool Session::launch(AppId id) {
+bool Session::launch(AppId id, const std::wstring& target, double startSeconds) {
     kill();
     id_ = id;
     std::wstring exe, args, cwd;
@@ -102,6 +119,14 @@ bool Session::launch(AppId id) {
         setEnv(L"BALATRO_PM_PERF_OPTIMIZATIONS", L"1");
         setEnv(L"BALATRO_PM_FPS_CAP", L"60");
         setEnv(L"BALATRO_PM_SKIP_RUMBLE", L"1");
+    } else if (isVideo(id)) {
+        exe = config_.mpv;
+        cwd = folderOf(exe);
+        wchar_t start[32];
+        swprintf_s(start, L"%.0f", startSeconds);
+        args = L"\"" + target + L"\" --input-ipc-server=" + MpvControl::pipeName() +
+               L" --force-window=immediate --no-border --geometry=" + std::to_wstring(SCREEN_W) + L"x" + std::to_wstring(SCREEN_H) +
+               L"+0+0 --keep-open=no --idle=no --hwdec=auto-safe --osd-level=1 --title=EchoArcadeMovie --volume=80 --start=" + start;
     } else {
         exe = config_.retroarch;
         cwd = folderOf(exe);
@@ -109,6 +134,7 @@ bool Session::launch(AppId id) {
         writeRetroConfig(config_, cfg);
         args = L"--appendconfig \"" + cfg + L"\"";
         if (id == AppId::Doom) args += L" -L \"" + config_.doomCore + L"\" \"" + config_.doomWad + L"\"";
+        else hostLog("playlists: %d game(s) found in %ls", writePlaylists(config_), config_.roms.c_str());
     }
     std::wstring cmd = L"\"" + exe + L"\" " + args;
     STARTUPINFOW si{sizeof(si)};
@@ -125,7 +151,8 @@ bool Session::launch(AppId id) {
     started_ = GetTickCount64();
     quitAt_ = 0;
     std::fill(std::begin(padState_), std::end(padState_), false);
-    hostLog("launched pid=%lu: %ls", pid_, cmd.c_str());
+    hostLog("launched pid=%lu: %ls", pid_, redact(cmd).c_str());
+    if (isVideo(id)) mpv_.connect();
     return true;
 }
 
@@ -148,7 +175,7 @@ void Session::poll() {
         // Apps resize themselves (RetroArch does on content load); keep nudging it back.
         uint64_t now = GetTickCount64();
         RECT wr;
-        if (now - lastPlace_ > 1000 && GetWindowRect(window_, &wr) && (wr.right - wr.left != r.w() || wr.bottom - wr.top != r.h())) {
+        if (!isRetro(id_) && now - lastPlace_ > 1000 && GetWindowRect(window_, &wr) && (wr.right - wr.left != r.w() || wr.bottom - wr.top != r.h())) {
             SetWindowPos(window_, HWND_BOTTOM, x, 0, r.w(), r.h(), SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
             lastPlace_ = now;
         }
@@ -163,6 +190,15 @@ void Session::poll() {
     // Changing another process's window sends it messages synchronously, and a busy
     // app (RetroArch loading a core) would stall us, so do it on a throwaway thread.
     HWND hwnd = window_;
+    if (isRetro(id_)) {
+        // RetroArch rebuilds its window when a core starts, and restyling it mid-
+        // rebuild hangs it. It is already borderless (retroarch_echo.cfg); just park
+        // it, asynchronously, and let the capture scale whatever size it picks.
+        SetWindowPos(hwnd, HWND_BOTTOM, x, 0, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_ASYNCWINDOWPOS);
+        hostLog("window %p found; parking RetroArch window", window_);
+        capture_.start(window_);
+        return;
+    }
     std::thread([hwnd, x, w = r.w(), h = r.h()] {
         LONG style = GetWindowLongW(hwnd, GWL_STYLE);
         SetWindowLongW(hwnd, GWL_STYLE, (style & ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX)) | WS_POPUP);
@@ -178,6 +214,7 @@ void Session::quit() {
     if (!process_ || quitAt_) return;
     quitAt_ = GetTickCount64();
     if (isRetro(id_)) command("QUIT");
+    else if (isVideo(id_)) mpv_.command(R"(["quit"])");
     else {
         const char msg[] = "quit";
         send(config_.balatroPort, msg, int(sizeof(msg) - 1));
@@ -185,6 +222,7 @@ void Session::quit() {
 }
 
 void Session::kill() {
+    mpv_.disconnect();
     capture_.stop();
     window_ = nullptr;
     if (process_) {
@@ -216,6 +254,8 @@ void Session::command(const char* text) {
 }
 
 // RetroArch network RetroPad packet (input_remote.c: struct remote_message).
+// RetroArch reads ONE packet per frame, so only ever send changes: periodic
+// refreshes queue up behind real presses and make input lag by seconds.
 struct RemoteMessage { int32_t port, device, index, id; uint16_t state; };
 
 void Session::pad(Pad button, bool down) {
@@ -225,12 +265,14 @@ void Session::pad(Pad button, bool down) {
     send(config_.retroPadPort, &msg, int(sizeof(msg)));
 }
 
-void Session::refreshPad() {
-    uint64_t now = GetTickCount64();
-    if (now - lastPadSend_ < 500) return;
-    lastPadSend_ = now;
-    for (int b = 0; b < PadCount; b++) {
-        RemoteMessage msg{0, 1, 0, b, uint16_t(padState_[b])};
+void Session::analog(float x, float y) {
+    int16_t v[2] = {int16_t(std::clamp(x, -1.f, 1.f) * 32767), int16_t(std::clamp(y, -1.f, 1.f) * 32767)};
+    for (int axis = 0; axis < 2; axis++) {
+        if (v[axis] == stick_[axis]) continue;
+        stick_[axis] = v[axis];
+        // RETRO_DEVICE_ANALOG, index 0 = left stick, id 0/1 = x/y.
+        RemoteMessage msg{0, 5, 0, axis, uint16_t(v[axis])};
         send(config_.retroPadPort, &msg, int(sizeof(msg)));
     }
 }
+

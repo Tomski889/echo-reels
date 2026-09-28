@@ -1,17 +1,17 @@
 # Echo Arcade
 
-A new **PLAY** tab on Echo VR's hand tablet that runs **Balatro** and **RetroArch** (any core, full menu, plus DOOM) on the tablet screen, played entirely by touch. It's built for private community servers. Everything runs locally on your PC and nothing is networked: only you see your tablet.
+A new **PLAY** tab on Echo VR's hand tablet that runs **Balatro**, **RetroArch** (30+ systems, full menu, plus DOOM), your **movies** and your **Plex** server on the tablet screen, all by touch. It's built for private community servers. Everything runs locally on your PC and nothing is networked: only you see your tablet.
 
 ```
 ┌──────────── Echo VR hand tablet ────────────┐
 │  ECHO ARCADE                tap a game      │
-│  ┌──────────────┐   ┌──────────────┐        │
-│  │ BALATRO      │   │ BALATRO      │        │
-│  │ Steam        │   │ PortMaster   │        │
-│  └──────────────┘   └──────────────┘        │
-│  ┌──────────────┐   ┌──────────────┐        │
-│  │ RETROARCH    │   │ DOOM         │        │
-│  └──────────────┘   └──────────────┘        │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐     │
+│  │ BALATRO  │ │ BALATRO  │ │RETROARCH │     │
+│  │ Steam    │ │PortMaster│ │ 30+ sys. │     │
+│  └──────────┘ └──────────┘ └──────────┘     │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐     │
+│  │ DOOM     │ │ MOVIES   │ │ PLEX     │     │
+│  └──────────┘ └──────────┘ └──────────┘     │
 │ [PLAY]  (home) (list) (emblem) (friends)    │
 └─────────────────────────────────────────────┘
 ```
@@ -20,10 +20,12 @@ A new **PLAY** tab on Echo VR's hand tablet that runs **Balatro** and **RetroArc
 | --- | --- | --- |
 | Balatro: Steam original | Your own Steam copy, unmodified content, **your Steam saves and achievements** | Tap = click, slide = drag cards |
 | Balatro: PortMaster | [PortMaster's handheld build](https://portmaster.games/detail.html?name=balatro) (bigger text, status-bar HUD, effects off), separate saves | Same |
-| RetroArch | RetroArch 1.22 with its full menu; add any cores and ROMs | On-screen RetroPad (D-pad, ABXY, L/R, Start/Select, MENU) |
+| RetroArch | RetroArch 1.22 + cores for 30+ systems (Atari to PS2/GameCube/Dreamcast, arcade, DOS). Your ROMs appear under **Playlists**, already paired with a core | On-screen RetroPad: D-pad or **analog stick**, ABXY, L/R, L2/R2, Start/Select, MENU |
 | DOOM | Shareware DOOM via the prboom core | Same RetroPad |
+| Movies | Your video folders (`apps\movies` and Windows *Videos* by default) in mpv | Tap for controls: ±10/30 s, pause, seek bar, volume, subtitles, audio track |
+| Plex | Movies and TV from your Plex server, direct play in mpv; resume points sync back to Plex | Link once with a code at plex.tv/link, then browse libraries, *Continue Watching*, shows, seasons and episodes |
 
-Tap **≡** (Balatro) or **HOME** (RetroArch) for Resume / Quit to launcher.
+Tap **≡** (Balatro) or **HOME** (RetroArch) for Resume / Quit to launcher. See **[docs/ROMS.md](docs/ROMS.md)** for ROM folders and BIOS files.
 
 ## How it works
 
@@ -38,6 +40,7 @@ echovr.exe
         • captures the game window (Windows.Graphics.Capture) → shared memory
         • touches → Balatro (Lua bridge over UDP 127.0.0.1)
                   → RetroArch (network RetroPad + command port, 127.0.0.1)
+                  → mpv (JSON IPC pipe), Plex (plex.tv link + your server)
 ```
 
 - **Tablet data:** `tools/build_arcade_tab.py` reads your game's own manifest and adds six resources: the root, navigation and page canvases, the button table (the tab plus a 32×18 grid of invisible poke cells), and a 1024×574 BGRA screen texture. Stock resources are verified byte-identical.
@@ -57,7 +60,7 @@ Requirements:
 ```powershell
 python -m venv .venv
 .venv\Scripts\pip install zstandard==0.25.0
-.venv\Scripts\python tools\setup_apps.py        # LÖVE, RetroArch + cores, DOOM shareware, PortMaster patches
+.venv\Scripts\python tools\setup_apps.py        # LÖVE, mpv, RetroArch + 30 cores, DOOM shareware, PortMaster patches
 .venv\Scripts\python tools\prepare_balatro.py   # finds Balatro.exe in your Steam libraries
 .\build.cmd                                      # EchoArcade.dll, ArcadeHost.exe, runs the IPC test
 # close Echo VR, then:

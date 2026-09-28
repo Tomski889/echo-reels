@@ -28,6 +28,8 @@ struct Config {
     std::wstring retroarch;           // retroarch.exe
     std::wstring doomCore, doomWad;   // prboom core + WAD for the DOOM tile
     std::wstring roms;                // RetroArch's Load Content start folder
+    std::wstring mpv;                 // mpv.exe
+    std::vector<std::wstring> movies; // video folders (arcade.ini movies=, ; separated)
     std::wstring windowMode;          // "desktop" (default) or "offscreen"
     int balatroPort = 55410, retroCmdPort = 55355, retroPadPort = 55400;
 };
