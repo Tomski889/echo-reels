@@ -63,6 +63,18 @@ def texture_pair(stock):
     return bytes(cpu), bytes(dds) + pixels
 
 
+def fix_texture_count(canvas):
+    """Header +0x28 = elements that reference a texture (sprite 3, mask 4, color mask 8).
+
+    Canvas load pre-sizes its "waiting for texture" list from this count; a sprite
+    on a canvas that says 0 makes the engine push into an empty list and crash
+    (echovr.exe+0x719ccb). Every stock canvas (277/277) follows this rule.
+    """
+    count = sum(struct.unpack_from('<I', e, 8)[0] in (3, 4, 8) for e in canvas.elements)
+    struct.pack_into('<I', canvas.header, 0x28, count)
+    return count
+
+
 def build():
     OUT.mkdir(parents=True, exist_ok=True)
     patcher = Patcher()
@@ -115,7 +127,9 @@ def build():
     struct.pack_into('<2I', root.header, 0x2c, 264, 396)
     struct.pack_into('<2I', nav.header, 0x2c, 548, 822)
     for c in (root, nav, page):
+        fix_texture_count(c)
         c.validate()
+    assert struct.unpack_from('<I', page.header, 0x28)[0] == 1 and struct.unpack_from('<I', nav.header, 0x28)[0] == 9
     assert [bytes(r) for r in root.elements[:7]] == old_root
     assert [bytes(r) for r in nav.elements[:9]] == old_nav
 

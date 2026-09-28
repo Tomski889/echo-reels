@@ -391,23 +391,38 @@ void initialize() {
     if (shared) stream::install(shared);
 }
 
-}  // namespace
-
-// EchoLoader entry point. It may pass a JSON args string or nothing; we need neither.
-extern "C" __declspec(dllexport) void PluginInit(const char*) {
+// Starts once, whichever comes first: EchoLoader's PluginInit (only called when the
+// plugin has "args" in echoloader.json) or our own DllMain.
+void start(HMODULE self) {
     static std::once_flag once;
-    std::call_once(once, [] {
-        HMODULE self = nullptr;
-        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-                           reinterpret_cast<LPCWSTR>(&PluginInit), &self);
+    std::call_once(once, [self] {
         wchar_t path[MAX_PATH];
         GetModuleFileNameW(self, path, MAX_PATH);
         pluginDir = path;
         pluginDir.resize(pluginDir.find_last_of(L"\\/"));
-        logf("PluginInit from %ls", path);
+        logf("EchoArcade loaded from %ls", path);
         // Hooks and the probe D3D12 device are created off the loader thread.
-        std::thread(initialize).detach();
+        HANDLE t = CreateThread(nullptr, 0, [](LPVOID) -> DWORD { initialize(); return 0; }, nullptr, 0, nullptr);
+        if (t) CloseHandle(t);
     });
 }
 
-BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }
+}  // namespace
+
+extern "C" __declspec(dllexport) void PluginInit(const char*) {
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&PluginInit), &self);
+    start(self);
+}
+
+BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        DisableThreadLibraryCalls(self);
+        HMODULE pinned = nullptr;  // never unload while hooks point into us
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                           reinterpret_cast<LPCWSTR>(&DllMain), &pinned);
+        start(self);  // the thread it creates runs after the loader lock is released
+    }
+    return TRUE;
+}

@@ -82,6 +82,15 @@ retroarch_pad_port=55400
     (target / 'arcade.ini').write_text(ini, encoding='utf-8')
 
 
+def ensure_loader_entry(plugins):
+    # EchoLoader only calls PluginInit for entries that have "args".
+    entry = next((e for e in plugins if e.get('file', '').lower() == 'echoarcade.dll'), None)
+    if entry is None:
+        plugins.append({'file': 'EchoArcade.dll', 'args': {}})
+    else:
+        entry.setdefault('args', {})
+
+
 def load_loader(p: Path):
     return json.loads(p.read_text(encoding='utf-8'))
 
@@ -116,8 +125,7 @@ def install(game: Path):
     copy_binaries(p)
     loader = load_loader(p['loader'])
     plugins = loader.setdefault('plugins', [])
-    if not any(e.get('file', '').lower() == 'echoarcade.dll' for e in plugins):
-        plugins.append({'file': 'EchoArcade.dll'})
+    ensure_loader_entry(plugins)
     p['loader'].write_text(json.dumps(loader, indent=4) + '\n', encoding='utf-8')
 
     STATE.write_text(json.dumps(dict(game=str(game), backup=str(backup), package=meta['package'],
@@ -138,7 +146,11 @@ def update(game: Path):
     check_game(game)
     if not STATE.exists():
         raise SystemExit('Not installed yet: run install first.')
-    copy_binaries(paths(Path(json.loads(STATE.read_text())['game'])))
+    p = paths(Path(json.loads(STATE.read_text())['game']))
+    copy_binaries(p)
+    loader = load_loader(p['loader'])
+    ensure_loader_entry(loader.setdefault('plugins', []))
+    p['loader'].write_text(json.dumps(loader, indent=4) + '\n', encoding='utf-8')
     print('Updated EchoArcade.dll, ArcadeHost.exe and arcade.ini (tablet data unchanged).')
 
 
