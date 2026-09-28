@@ -71,22 +71,27 @@ arcade::Shared* shared = nullptr;
 std::unordered_map<U, unsigned> cellIndex;
 std::atomic<U> lastTabletTick{0};
 std::atomic<bool> arcadeSelected{false};
+std::atomic<int> pageMode{0};
 HANDLE job = nullptr;
 std::wstring pluginDir;
+std::wstring startupEnvironment;  // Echo's environment at plugin load (see startHost)
 
 void failRuntime(const char* why) { fault = true; logf("FAULT: %s -- ARCADE disabled for this session", why); }
 
 // Canvas kinds: 0 root, 1 nav, 2 ARCADE page, 3-5 stock page canvases hidden under ours.
 constexpr unsigned KINDS = 6;
 constexpr unsigned COUNTS[KINDS] = {ARCADE_ROOT_ELEMENTS, ARCADE_NAV_ELEMENTS, ARCADE_PAGE_ELEMENTS, 24, 59, 7};
-constexpr unsigned MARKER_INDEX[KINDS] = {ARCADE_ROOT_CHILD, ARCADE_NAV_LABEL, 0, 0, 0, 0};
+constexpr unsigned MARKER_INDEX[KINDS] = {ARCADE_ROOT_CHILD, ARCADE_NAV_ICON, 0, 0, 0, 0};
 constexpr U MARKERS[KINDS] = {ARCADE_ROOT_MARKER, ARCADE_NAV_MARKER, ARCADE_PAGE_MARKER,
                               0x41d2cf3808220b1a, 0x2fd5888f5f7a5286, 0xf79f5459a0f0cf34};
 
 struct View { void* p = nullptr; bool saved = false; float opacity = 0; std::array<bool, 3> visible{}; };
 enum class Page { Stock, Arcade };
+enum class Mode { Arcade = 0, Settings = 1 };  // both tabs show our page; the host draws either
 struct Context {
     Page page = Page::Stock;
+    Mode mode = Mode::Arcade;
+    int navState = -1;   // highlighted tab we last drew: 0 stock, 1 ARCADE, 2 SETTINGS
     std::array<View, KINDS> views{};
     std::set<unsigned> masked;
     int statusShown = -1;
@@ -99,6 +104,7 @@ std::set<std::array<U, 3>> held;                            // (gamespace, actor
 
 bool isContent(U n) { return std::find(std::begin(CONTENT), std::end(CONTENT), n) != std::end(CONTENT); }
 bool isStockTab(U n) { return n >= STOCK_TAB_FIRST && n <= STOCK_TAB_LAST; }
+bool isOurTab(U n) { return n == ARCADE_TAB || n == SETTINGS_TAB; }
 int cellOf(U n) { auto it = cellIndex.find(n); return it == cellIndex.end() ? -1 : int(it->second); }
 
 void remember(void* p, unsigned depth = 0) {
@@ -141,8 +147,15 @@ void startHost() {
     std::wstring cmd = L"\"" + exePath + L"\"";
     STARTUPINFOW si{sizeof(si)};
     PROCESS_INFORMATION pi{};
-    if (!CreateProcessW(exePath.c_str(), cmd.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED | CREATE_NO_WINDOW,
-                        nullptr, (pluginDir + L"\\EchoArcade").c_str(), &si, &pi)) {
+    // Echo edits its own environment after start-up (the in-game host lost
+    // %LOCALAPPDATA%), so the host and its apps get the environment Echo was
+    // launched with instead.
+    wchar_t probe[8];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", probe, 8)) logf("note: Echo's environment has no LOCALAPPDATA now; using the start-up copy");
+    void* env = startupEnvironment.empty() ? nullptr : startupEnvironment.data();
+    if (!CreateProcessW(exePath.c_str(), cmd.data(), nullptr, nullptr, FALSE,
+                        CREATE_SUSPENDED | CREATE_NO_WINDOW | (env ? CREATE_UNICODE_ENVIRONMENT : 0),
+                        env, (pluginDir + L"\\EchoArcade").c_str(), &si, &pi)) {
         logf("could not start ArcadeHost.exe (error %lu)", GetLastError());
         return;
     }
@@ -180,7 +193,16 @@ void render(Context& c) {
         show(root.p, ARCADE_ROOT_HEADER, active);
         show(root.p, ARCADE_ROOT_TITLE, active);
     }
-    if (c.views[1].p) text(c.views[1].p, ARCADE_NAV_LABEL, active ? "PLAY*" : "PLAY");
+    // Tab highlights: ours while our page is up, otherwise the stock ones (which the
+    // game's own scripts keep pointing at the right stock tab).
+    int nav = !active ? 0 : c.mode == Mode::Settings ? 2 : 1;
+    if (c.views[1].p && c.navState != nav) {
+        show(c.views[1].p, ARCADE_NAV_SELECTED, nav == 1);
+        show(c.views[1].p, SETTINGS_NAV_SELECTED, nav == 2);
+        for (auto i : ARCADE_NAV_STOCK_SELECTED) show(c.views[1].p, i, nav == 0);
+        if (root.p && nav) text(root.p, ARCADE_ROOT_TITLE, nav == 2 ? "SETTINGS" : "ARCADE");
+        c.navState = nav;
+    }
     if (active && c.views[2].p) {
         U now = GetTickCount64();
         bool frames = shared && shared->latestFrame != LONG(arcade::NO_FRAME);
@@ -205,7 +227,7 @@ void gate(Context& c, void* cs) {
         unsigned row = at<unsigned short>(instances, i * 400);
         if (row >= count) { failRuntime("invalid button row"); return; }
         U name = at<U>(rows, row * 296);
-        if (name != ARCADE_TAB && cellOf(name) < 0 && !isContent(name)) continue;
+        if (!isOurTab(name) && cellOf(name) < 0 && !isContent(name)) continue;
         if (!isContent(name) && at<U>(rows, row * 296 + 8) != TABLET_ACTOR) continue;
         unsigned slot = at<unsigned short>(inverse, i * 2);
         if (slot >= count) { failRuntime("invalid button handle slot"); return; }
@@ -218,11 +240,11 @@ void gate(Context& c, void* cs) {
     bool ready = c.views[0].p && c.views[1].p && c.views[2].p;
     for (auto& b : buttons) {
         bool hide;
-        if (fault) hide = b.name != ARCADE_TAB && !isContent(b.name);  // leave stock buttons alone after a fault
-        else if (b.name == ARCADE_TAB) hide = !ready;
+        if (fault) hide = !isOurTab(b.name) && !isContent(b.name);  // leave stock buttons alone after a fault
+        else if (isOurTab(b.name)) hide = !ready;
         else if (isContent(b.name)) hide = c.page != Page::Stock;
         else hide = c.page != Page::Arcade;  // touch cells
-        if (fault && b.name == ARCADE_TAB) hide = true;
+        if (fault && isOurTab(b.name)) hide = true;
         if (hide && !c.masked.count(b.handle)) {
             if (b.reasons & 0x8000) { failRuntime("button disable bit 0x8000 already owned"); return; }
             disableButton(cs, b.handle, 0x8000);
@@ -236,8 +258,11 @@ void gate(Context& c, void* cs) {
 
 void refreshSelection() {
     bool any = false;
-    for (auto& [gs, c] : contexts) any |= c.page == Page::Arcade && c.views[2].p != nullptr;
+    int mode = 0;
+    for (auto& [gs, c] : contexts)
+        if (c.page == Page::Arcade && c.views[2].p != nullptr) { any = true; mode = int(c.mode); }
     arcadeSelected = any && !fault;
+    pageMode = mode;
 }
 
 // ---- hooks (engine threads) ----
@@ -263,6 +288,7 @@ void unloadLocked(void* p) {
     auto& ctx = contexts[gs];
     if (ctx.views[kind].p == p) ctx.views[kind] = View{};
     if (kind == 0) { ctx.page = Page::Stock; releaseAllTouches(gs); }
+    if (kind == 1) ctx.navState = -1;
     if (kind == 2) ctx.statusShown = -1, ctx.statusText.clear();
     canvases.erase(it);
     refreshSelection();
@@ -293,7 +319,7 @@ void button(void* cs) {
 
 void onEvent(void* gs, U event, U actor, U component) {
     int cell = cellOf(component);
-    if (component != ARCADE_TAB && !isStockTab(component) && cell < 0) return;
+    if (!isOurTab(component) && !isStockTab(component) && cell < 0) return;
     auto it = contexts.find(gs);
     if (it == contexts.end() || !it->second.views[0].p) return;
     auto& c = it->second;
@@ -306,9 +332,12 @@ void onEvent(void* gs, U event, U actor, U component) {
     if (isStockTab(component)) {
         if (c.page == Page::Arcade) { releaseAllTouches(gs); held.insert(key); logf("left ARCADE page"); }
         c.page = Page::Stock;
-    } else if (component == ARCADE_TAB) {
-        if (c.page != Page::Arcade) logf("ARCADE page selected");
+    } else if (isOurTab(component)) {
+        Mode mode = component == SETTINGS_TAB ? Mode::Settings : Mode::Arcade;
+        if (c.page != Page::Arcade || c.mode != mode) logf("%s page selected", mode == Mode::Settings ? "SETTINGS" : "ARCADE");
+        if (c.page == Page::Arcade && c.mode != mode) { releaseAllTouches(gs); held.insert(key); }
         c.page = Page::Arcade;
+        c.mode = mode;
         startHost();
     } else if (c.page == Page::Arcade && shared) {
         arcade::pushTouch(shared, unsigned(cell), arcade::TouchDown);
@@ -356,6 +385,7 @@ void heartbeatLoop() {
         if (shared) {
             shared->gameHeartbeat = LONG64(now);
             shared->pageVisible = visible;
+            shared->pageMode = pageMode;
         }
         stream::setVisible(visible);
     }
@@ -402,6 +432,12 @@ void start(HMODULE self) {
         pluginDir = path;
         pluginDir.resize(pluginDir.find_last_of(L"\\/"));
         logf("EchoArcade loaded from %ls", path);
+        if (wchar_t* block = GetEnvironmentStringsW()) {
+            const wchar_t* end = block;
+            while (*end) end += wcslen(end) + 1;
+            startupEnvironment.assign(block, size_t(end - block) + 1);  // keep the final terminator
+            FreeEnvironmentStringsW(block);
+        }
         tweaks::start(pluginDir);  // independent of the tablet: must beat the game's first Oculus FOV query
         // Hooks and the probe D3D12 device are created off the loader thread.
         HANDLE t = CreateThread(nullptr, 0, [](LPVOID) -> DWORD { initialize(); return 0; }, nullptr, 0, nullptr);

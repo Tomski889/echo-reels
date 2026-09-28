@@ -19,9 +19,7 @@ using namespace std::chrono_literals;
 namespace {
 
 std::wstring storePath() {
-    wchar_t base[MAX_PATH];
-    GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
-    std::wstring dir = std::wstring(base) + L"\\EchoArcade";
+    std::wstring dir = localAppData() + L"\\EchoArcade";
     CreateDirectoryW(dir.c_str(), nullptr);
     return dir + L"\\plex.json";
 }

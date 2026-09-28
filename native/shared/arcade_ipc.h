@@ -38,7 +38,7 @@ struct Shared {
     volatile LONG hostPid;
     volatile LONG latestFrame;      // index of newest complete buffer, NO_FRAME if none
     volatile LONG frameSerial;      // bumps each published frame
-    volatile LONG reserved1;
+    volatile LONG tabletScale;      // requested tablet size x1000 from SETTINGS (0 = unchanged)
     volatile LONG64 hostHeartbeat;  // GetTickCount64 of the host's last loop
     char status[96];                // shown on the tablet when the host is missing
 
@@ -46,7 +46,7 @@ struct Shared {
     volatile LONG gamePid;
     volatile LONG pageVisible;      // ARCADE page is the active tablet page
     volatile LONG readingFrame;     // buffer the game is copying right now, NO_FRAME if none
-    volatile LONG reserved2;
+    volatile LONG pageMode;         // 0 = ARCADE tab, 1 = SETTINGS tab (same page, host draws it)
     volatile LONG64 gameHeartbeat;
     volatile LONG touchWrite;       // total events ever written
     volatile LONG reserved3[3];

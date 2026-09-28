@@ -64,6 +64,7 @@ public:
         : shared_(shared), standalone_(standalone), config_(loadConfig()), session_(config_) {
         readPos_ = shared_->touchWrite;
         apps_ = listApps(config_);
+        loadSettings();
         shared_->hostPid = LONG(GetCurrentProcessId());
     }
 
@@ -300,9 +301,91 @@ private:
         }
     }
 
+    // ------------------------------------------------ SETTINGS tab
+    // Saved in echo_tweaks.ini beside the host, which the plugin reads when Echo starts.
+    struct Setting { const wchar_t* label; const wchar_t* section; const wchar_t* key; float min, max, step, value; };
+    std::wstring tweaksPath() const {
+        wchar_t path[MAX_PATH];
+        GetModuleFileNameW(nullptr, path, MAX_PATH);
+        std::wstring p = path;
+        return p.substr(0, p.find_last_of(L"\\/")) + L"\\echo_tweaks.ini";
+    }
+    void loadSettings() {
+        settings_ = {{L"TABLET SIZE", L"tablet", L"scale", .75f, 2.f, .05f, 1.f},
+                     {L"VIEW WIDTH (FOV)", L"fov", L"x", .8f, 2.f, .05f, 1.f},
+                     {L"VIEW HEIGHT (FOV)", L"fov", L"y", .8f, 2.f, .05f, 1.f}};
+        for (auto& s : settings_) {
+            wchar_t buf[32];
+            GetPrivateProfileStringW(s.section, s.key, L"1.0", buf, 32, tweaksPath().c_str());
+            s.value = std::clamp(float(_wtof(buf)), s.min, s.max);
+        }
+        shared_->tabletScale = LONG(settings_[0].value * 1000);
+    }
+    void setSetting(size_t i, float v) {
+        auto& s = settings_[i];
+        v = std::clamp(std::round(v / s.step) * s.step, s.min, s.max);
+        if (std::fabs(v - s.value) < .001f) return;
+        s.value = v;
+        wchar_t buf[16];
+        swprintf(buf, 16, L"%.2f", v);
+        WritePrivateProfileStringW(s.section, s.key, buf, tweaksPath().c_str());
+        if (i == 0) shared_->tabletScale = LONG(v * 1000);
+    }
+    static int settingY(size_t i) { return 96 + int(i) * 150; }
+    static Rect settingMinus(size_t i) { return {20, settingY(i) + 46, 110, settingY(i) + 116}; }
+    static Rect settingPlus(size_t i) { return {914, settingY(i) + 46, 1004, settingY(i) + 116}; }
+    static Rect settingTrack(size_t i) { return {140, settingY(i) + 66, 884, settingY(i) + 96}; }
+    bool settingsMode() const { return shared_->pageMode == 1; }
+
+    void settingsTouch(const Touch& t) {
+        for (size_t i = 0; i < settings_.size(); i++) {
+            auto& s = settings_[i];
+            if (tapped(t, 600 + int(i) * 2, settingMinus(i))) { setSetting(i, s.value - s.step); return; }
+            if (tapped(t, 601 + int(i) * 2, settingPlus(i))) { setSetting(i, s.value + s.step); return; }
+            Rect track = settingTrack(i);
+            if (t.down && grow(track, 26).contains(t.x, t.y)) {  // tap or slide along the bar
+                float f = std::clamp(float(t.x - track.x0) / track.w(), 0.f, 1.f);
+                setSetting(i, s.min + f * (s.max - s.min));
+                return;
+            }
+        }
+        if (!t.down) pressed_ = -1;
+    }
+
+    void drawSettings() {
+        canvas_.clear(rgb(14, 16, 24));
+        header(L"SETTINGS", false);
+        for (size_t i = 0; i < settings_.size(); i++) {
+            auto& s = settings_[i];
+            int y = settingY(i);
+            wchar_t value[16];
+            swprintf(value, 16, L"%.2fx", s.value);
+            canvas_.text({24, y, 700, y + 44}, s.label, 26, rgb(235, 235, 240), true, 0);
+            canvas_.text({700, y, 1004, y + 44}, value, 26, rgb(90, 200, 255), true, 2);
+            button(settingMinus(i), L"\x2212", pressed_ == 600 + int(i) * 2, rgb(44, 50, 72), 36);
+            button(settingPlus(i), L"+", pressed_ == 601 + int(i) * 2, rgb(44, 50, 72), 36);
+            Rect track = settingTrack(i);
+            canvas_.fill(track, rgb(40, 44, 62));
+            int fill = track.x0 + int(track.w() * (s.value - s.min) / (s.max - s.min));
+            canvas_.fill({track.x0, track.y0, fill, track.y1}, rgb(70, 150, 190));
+            canvas_.fill({fill - 14, track.y0 - 16, fill + 14, track.y1 + 16}, rgb(235, 240, 250));
+        }
+        canvas_.text({24, 516, 1004, 572}, L"Saved instantly. View (FOV) applies the next time Echo VR starts. "
+                     L"Tablet size is saved now; resizing arrives in a plugin update.", 17, rgb(150, 160, 180), false, 0);
+    }
+
+    // Stop whatever the game was being fed when the tab changes under a held finger.
+    void releaseGameInput() {
+        for (auto& b : PAD) session_.pad(b.pad, false);
+        session_.analog(0, 0);
+        if (pointerDown_) session_.pointer("up", lastU_, lastV_);
+        resetInput();
+    }
+
     void onTouch(const Touch& t) {
         if (t.down) held_[t.cell] = t; else held_.erase(t.cell);
-        if (!loading_.empty()) return;
+        if (!loading_.empty() && !settingsMode()) return;
+        if (settingsMode()) { settingsTouch(t); return; }
         switch (mode_) {
             case Mode::Launcher: launcherTouch(t); break;
             case Mode::Browse: browseTouch(t); break;
@@ -620,6 +703,9 @@ private:
     }
 
     void render() {
+        bool settings = settingsMode();
+        if (settings != lastSettings_) { if (session_.alive()) releaseGameInput(); else resetInput(); lastSettings_ = settings; }
+        if (settings) { drawSettings(); canvas_.opaque(); return; }
         switch (mode_) {
             case Mode::Launcher: drawLauncher(); break;
             case Mode::Browse: drawBrowse(); break;
@@ -665,6 +751,8 @@ private:
     int capW_ = 0, capH_ = 0;
     uint64_t captureSerial_ = 0;
     Rect fit_{};
+    std::vector<Setting> settings_;
+    bool lastSettings_ = false;
 };
 
 }  // namespace

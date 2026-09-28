@@ -6,8 +6,19 @@ PAGE_W, PAGE_H = 942, 528         # same page area the stock pages use
 SCREEN_RECT = (0, 0, PAGE_W, PAGE_H)
 TEX_W, TEX_H = 1024, 574          # page aspect; this size is unique among stock textures
 GRID_COLS, GRID_ROWS = 32, 18     # invisible poke cells over the screen (~8.6 mm each)
-TAB_RECT = (30, 662, 122, 751)    # free navigation slot left of the stock tabs
-TAB_LABEL = 'PLAY'
+# Navigation bar: ARCADE, the 4 stock tabs, SETTINGS as 6 evenly spaced icons centred
+# on the bar (between its corner marks at x~61 and x~929). Stock spacing is 204.8,
+# which only fits 4.
+TAB_SIZE = 89                                   # stock icon size
+TAB_SPACING = 139
+TAB_SLOT_CENTERS = tuple(512 + (i - 2.5) * TAB_SPACING for i in range(6))
+ARCADE_SLOT, STOCK_SLOTS, SETTINGS_SLOT = 0, (1, 2, 3, 4), 5
+TAB_Y = (662, 751)
+
+
+def tab_rect(slot):
+    c = TAB_SLOT_CENTERS[slot]
+    return (c - TAB_SIZE / 2, TAB_Y[0], c + TAB_SIZE / 2, TAB_Y[1])
 
 _FONT = {  # 5x7 glyphs for the baked splash only; the host renders real text.
     'A': '01110 10001 10001 11111 10001 10001 10001', 'R': '11110 10001 10001 11110 10100 10010 10001',

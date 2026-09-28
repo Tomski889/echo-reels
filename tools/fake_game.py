@@ -5,6 +5,7 @@
     python tools/fake_game.py hold X Y SECONDS      # press and hold
     python tools/fake_game.py drag X0 Y0 X1 Y1      # slide a finger across cells
     python tools/fake_game.py serve SECONDS         # just keep the heartbeat alive
+    python tools/fake_game.py mode 0|1              # show the ARCADE (0) or SETTINGS (1) tab
 
 Every command keeps the game heartbeat and pageVisible alive while it runs.
 Offsets match native/shared/arcade_ipc.h (checked by tests/ipc_test.cpp).
@@ -77,6 +78,8 @@ elif cmd == 'tap':
     c = cell_at(a[0], a[1]); beat(); touch(c, True); wait(0.12); touch(c, False); wait(0.2)
 elif cmd == 'hold':
     c = cell_at(a[0], a[1]); beat(); touch(c, True); wait(a[2]); touch(c, False); wait(0.2)
+elif cmd == 'mode':
+    struct.pack_into('<i', shm, 164, int(a[0])); wait(0.3)
 elif cmd == 'drag':
     steps = 8; prev = None
     for i in range(steps + 1):

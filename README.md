@@ -1,6 +1,6 @@
 # Echo Arcade
 
-A new **PLAY** tab on Echo VR's hand tablet that runs **Balatro**, **RetroArch** (30+ systems, full menu, plus DOOM), your **movies** and your **Plex** server on the tablet screen, all by touch. It's built for private community servers. Everything runs locally on your PC and nothing is networked: only you see your tablet.
+A new **Arcade** tab (gamepad icon) on Echo VR's hand tablet that runs **Balatro**, **RetroArch** (30+ systems, full menu, plus DOOM), your **movies** and your **Plex** server on the tablet screen, all by touch. It's built for private community servers. Everything runs locally on your PC and nothing is networked: only you see your tablet.
 
 ```
 ┌──────────── Echo VR hand tablet ────────────┐
@@ -12,7 +12,7 @@ A new **PLAY** tab on Echo VR's hand tablet that runs **Balatro**, **RetroArch**
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐     │
 │  │ DOOM     │ │ MOVIES   │ │ PLEX     │     │
 │  └──────────┘ └──────────┘ └──────────┘     │
-│ [PLAY]  (home) (list) (emblem) (friends)    │
+│ [pad] (home) (list) (emblem) (friends) [⚙] │
 └─────────────────────────────────────────────┘
 ```
 
@@ -25,7 +25,9 @@ A new **PLAY** tab on Echo VR's hand tablet that runs **Balatro**, **RetroArch**
 | Movies | Your video folders (`apps\movies` and Windows *Videos* by default) in mpv | Tap for controls: ±10/30 s, pause, seek bar, volume, subtitles, audio track |
 | Plex | Movies and TV from your Plex server, direct play in mpv; resume points sync back to Plex | Link once with a code at plex.tv/link, then browse libraries, *Continue Watching*, shows, seasons and episodes |
 
-Tap **≡** (Balatro) or **HOME** (RetroArch) for Resume / Quit to launcher. See **[docs/ROMS.md](docs/ROMS.md)** for ROM folders and BIOS files.
+Tap **≡** (Balatro) or **HOME** (RetroArch) for Resume / Quit to launcher. The **gear** tab is **Settings**: tablet size and view (FOV) sliders, saved to `echo_tweaks.ini`.
+
+The six tab icons are centred on the bar; the Arcade and Settings icons are drawn at build time from your game's own tab art, so they match the stock ones. See **[docs/ROMS.md](docs/ROMS.md)** for ROM folders and BIOS files.
 
 ## How it works
 
@@ -59,7 +61,7 @@ Requirements:
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\pip install zstandard==0.25.0
+.venv\Scripts\pip install zstandard==0.25.0 pillow texture2ddecoder
 .venv\Scripts\python tools\setup_apps.py        # LÖVE, mpv, RetroArch + 30 cores, DOOM shareware, PortMaster patches
 .venv\Scripts\python tools\prepare_balatro.py   # finds Balatro.exe in your Steam libraries
 .\build.cmd                                      # EchoArcade.dll, ArcadeHost.exe, runs the IPC test
@@ -67,7 +69,7 @@ python -m venv .venv
 .venv\Scripts\python tools\install.py install --game "C:\path\to\ready-at-dawn-echo-arena"
 ```
 
-Start Echo VR, open the hand tablet and press **PLAY**, left of the stock tabs. The first open starts the host; after that the launcher appears.
+Start Echo VR, open the hand tablet and press the **gamepad** tab (far left). The first open starts the host; after that the launcher appears.
 
 To uninstall, close Echo VR and run `tools\install.py restore`. It puts back the original manifest (hash-checked) and `echoloader.json`, and removes the package and plugin files. Backups are kept in `backups\`.
 
@@ -94,9 +96,10 @@ dist\EchoArcade\ArcadeHost.exe --standalone
 ## Troubleshooting
 
 - The logs are `%LOCALAPPDATA%\EchoArcade\runtime.log` (in-game plugin) and `host.log` (launcher and apps).
-- **PLAY tab shows but does nothing, and there's no `runtime.log`:** the plugin never started. Run `tools\install.py status`. If `echoloader dll: False`, another mod (e.g. the EchoVR-Haptics/FOV tool) replaced `bin\win10\dbgcore.dll`. Put EchoLoader back from `https://files.echovr.de/updates/dbgcore.dll` (the Echo VR Installer's source).
-- **PLAY tab missing:** check `runtime.log` for `unsupported echovr.exe` or `signature mismatch`. Another tablet mod (e.g. the DOOM/MUSIC tab) uses the same slot; restore that one first.
+- **Arcade tab shows but does nothing, and there's no `runtime.log`:** the plugin never started. Run `tools\install.py status`. If `echoloader dll: False`, another mod (e.g. the EchoVR-Haptics/FOV tool) replaced `bin\win10\dbgcore.dll`. Put EchoLoader back from `https://files.echovr.de/updates/dbgcore.dll` (the Echo VR Installer's source).
+- **Arcade tab missing:** check `runtime.log` for `unsupported echovr.exe` or `signature mismatch`. Another tablet mod (e.g. the DOOM/MUSIC tab) uses the same slot; restore that one first.
 - **Tab opens but shows the "STARTING…" splash forever:** look for `stream:` lines in `runtime.log`. `screen texture created` and `frames uploaded` should both appear.
+- **Balatro only reacts to some taps:** on a profile that hasn't finished Balatro's tutorial, Jimbo's tutorial blocks everything except its own prompts. Tap **Skip >** (top right) or his speech bubble.
 - **App windows** sit behind your other windows at the top-left of the desktop. Set `window_mode=offscreen` in `plugins\EchoArcade\arcade.ini` to move them off-screen.
 
 ## Status

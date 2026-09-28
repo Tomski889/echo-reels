@@ -144,7 +144,7 @@ def install(game: Path):
                                      manifest_sha256=sha(p['manifest']), original_manifest_sha256=meta['base_manifest_sha256']), indent=2))
     check_echoloader(p)
     print(f'Installed. Backups in {backup}')
-    print('Start Echo VR normally, open the hand tablet and press PLAY (left of the tabs).')
+    print('Start Echo VR normally, open the hand tablet and press the gamepad tab (far left); the gear tab (far right) is SETTINGS.')
 
 
 def write_tweaks(p):
@@ -170,12 +170,17 @@ def write_tweaks(p):
                 pass
         # One-axis stretch (e.g. x1.0 y1.5) looks warped in a wide recording window.
         x = y = max(x, y)
-    target.write_text(f"""; Echo VR tweaks (read when Echo starts; edit freely, updates keep this file)
+    target.write_text(f"""; Echo VR tweaks (read when Echo starts; edit here or on the tablet's SETTINGS tab)
 [fov]
-; Eye field-of-view multipliers, 0.5 to 2.0 (1.0 = normal). Widens the view the
+; Eye field-of-view multipliers, 0.8 to 2.0 (1.0 = normal). Widens the view the
 ; game renders: visible in the desktop mirror / recordings.
+; Keep x and y equal for natural proportions. Higher values cost GPU (1.4 = ~2x the pixels).
 x={x:.2f}
 y={y:.2f}
+
+[tablet]
+; Tablet size, 0.75 to 2.0 (saved by the SETTINGS tab; applied by a future plugin update)
+scale=1.00
 """, encoding='utf-8')
     print(f'Created {target.name} (fov x={x:.2f} y={y:.2f})')
 
@@ -223,7 +228,15 @@ def restore(game: Path, force: bool):
     for f in (p['plugins'] / 'EchoArcade.dll',):
         if f.exists():
             f.unlink()
-    shutil.rmtree(p['plugins'] / 'EchoArcade', ignore_errors=True)
+    host_dir = p['plugins'] / 'EchoArcade'
+    if host_dir.exists():  # keep the user's echo_tweaks.ini (FOV, tablet size) for a reinstall
+        for f in host_dir.iterdir():
+            if f.name != 'echo_tweaks.ini':
+                shutil.rmtree(f, ignore_errors=True) if f.is_dir() else f.unlink()
+        if not any(host_dir.iterdir()):
+            host_dir.rmdir()
+        else:
+            print(f'Kept your settings file {host_dir / "echo_tweaks.ini"} (delete it by hand if you are uninstalling for good).')
     ok = sha(p['manifest']) == state['original_manifest_sha256']
     STATE.unlink()
     print('Restored original manifest' + (' (hash verified).' if ok else ' (WARNING: hash differs from the pre-install manifest).'))

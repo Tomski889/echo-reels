@@ -14,6 +14,7 @@ int main() {
     static_assert(offsetof(arcade::Shared, frameSerial) == 40 && offsetof(arcade::Shared, hostHeartbeat) == 48);
     static_assert(offsetof(arcade::Shared, gamePid) == 152 && offsetof(arcade::Shared, pageVisible) == 156);
     static_assert(offsetof(arcade::Shared, readingFrame) == 160 && offsetof(arcade::Shared, gameHeartbeat) == 168);
+    static_assert(offsetof(arcade::Shared, tabletScale) == 44 && offsetof(arcade::Shared, pageMode) == 164);
     static_assert(offsetof(arcade::Shared, touchWrite) == 176 && offsetof(arcade::Shared, touches) == 192);
     static_assert(offsetof(arcade::Shared, frames) == 8192 && sizeof(arcade::Shared) == 8192 + 3 * 2351104);
     HANDLE mapping = nullptr;

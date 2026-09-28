@@ -3,15 +3,24 @@
 #include <cstdarg>
 #include <cstdio>
 #include <share.h>
+#include <shlobj.h>
+
+std::wstring localAppData() {
+    wchar_t base[MAX_PATH];
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) return base;
+    std::wstring result;
+    PWSTR known = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &known))) result = known;
+    CoTaskMemFree(known);
+    return result;
+}
 
 void hostLog(const char* format, ...) {
     static std::mutex m;
     static FILE* file = nullptr;
     std::lock_guard<std::mutex> lock(m);
     if (!file) {
-        wchar_t base[MAX_PATH];
-        if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) return;
-        std::wstring dir = std::wstring(base) + L"\\EchoArcade";
+        std::wstring dir = localAppData() + L"\\EchoArcade";
         CreateDirectoryW(dir.c_str(), nullptr);
         file = _wfsopen((dir + L"\\host.log").c_str(), L"a", _SH_DENYNO);
         if (!file) return;

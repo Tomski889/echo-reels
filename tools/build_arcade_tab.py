@@ -26,7 +26,9 @@ from canvas_edit import Canvas, descriptor, u64  # noqa: E402
 from echovr_patch import Patcher, ManifestFile, MID, GAME_MANIFEST, GAME_PACKAGES, verify  # noqa: E402
 from build_tools_tab import empty_canvas, ROOT_CANVAS, NAV_CANVAS, LEVEL, ACTOR  # noqa: E402
 from arcade_layout import (PAGE_W, PAGE_H, PAGE_X, PAGE_Y, SCREEN_RECT, TEX_W, TEX_H,  # noqa: E402
-                           GRID_COLS, GRID_ROWS, TAB_RECT, TAB_LABEL, splash_bgra)
+                           GRID_COLS, GRID_ROWS, TAB_SLOT_CENTERS, ARCADE_SLOT, STOCK_SLOTS,
+                           SETTINGS_SLOT, tab_rect, splash_bgra)
+from tab_icon import tab_icons  # noqa: E402
 
 OUT = ROOT / 'build/tab'
 GENERATED = ROOT / 'native/generated'
@@ -34,33 +36,78 @@ TITLE_DONOR = 0xfdea8aeb3a0f4862
 NAV_SOURCE_BUTTON = 0x275876572b742791
 PAGE = P.sym('echo_arcade_page_v1')
 TEXTURE = P.sym('echo_arcade_screen_v1')
+ICON_TEXTURE = P.sym('echo_arcade_tab_icon_texture_v1')
 TAB_BUTTON = P.sym('echo_arcade_tab_button_v1')
+SETTINGS_BUTTON = P.sym('echo_arcade_settings_button_v1')
+STOCK_NAV_CANVAS = NAV_CANVAS
 BGRA_TEMPLATE = 0x84b9a06506af66fe  # stock 128x128 B8G8R8A8_UNORM texture
+NAV_ATLAS = 0x79563b60c7895d4e      # stock UI atlas (BC7_UNORM_SRGB) the tab icons come from
 DXGI_B8G8R8A8_UNORM = 87
+# The tablet's own UI textures are all sRGB (BC7_UNORM_SRGB). A linear UNORM screen
+# made the game gamma-correct our already-sRGB pixels a second time: washed out.
+DXGI_B8G8R8A8_UNORM_SRGB = 91
 
 
 def cell_symbol(c, r):
     return P.sym(f'echo_arcade_cell_{c}_{r}_v1')
 
 
-def texture_pair(stock):
-    """Clone the stock BGRA texture header pair, resized to TEX_W x TEX_H."""
+def texture_pair(stock, w, h, pixels, fmt=DXGI_B8G8R8A8_UNORM_SRGB):
+    """Clone the stock BGRA texture header pair as a w x h texture of `fmt` holding `pixels`."""
     tt, tg = P.typesym('CGTextureResource'), P.typesym('CGTextureResource', True)
     cpu = bytearray(stock.get(tt, BGRA_TEMPLATE))
     gpu = stock.get(tg, BGRA_TEMPLATE)
     if len(cpu) != 256 or struct.unpack_from('<I', cpu, 0xd8)[0] != DXGI_B8G8R8A8_UNORM:
         raise ValueError('Unexpected BGRA template texture')
-    pitch, size = TEX_W * 4, TEX_W * TEX_H * 4
+    pitch, size = w * 4, w * h * 4
     dds = bytearray(gpu[:148])
     if dds[:4] != b'DDS ' or dds[84:88] != b'DX10' or struct.unpack_from('<I', dds, 128)[0] != DXGI_B8G8R8A8_UNORM:
         raise ValueError('Unexpected BGRA template DDS header')
-    struct.pack_into('<III', dds, 12, TEX_H, TEX_W, pitch)
-    struct.pack_into('<II', cpu, 0xc4, TEX_W, TEX_H)
-    struct.pack_into('<II', cpu, 0xe8, TEX_W, TEX_H)
+    struct.pack_into('<III', dds, 12, h, w, pitch)
+    struct.pack_into('<I', dds, 128, fmt)
+    struct.pack_into('<II', cpu, 0xc4, w, h)
+    struct.pack_into('<I', cpu, 0xd8, fmt)
+    struct.pack_into('<II', cpu, 0xe8, w, h)
     struct.pack_into('<II', cpu, 0xf4, len(dds) + size, pitch)
-    pixels = splash_bgra()
     assert len(pixels) == size
     return bytes(cpu), bytes(dds) + pixels
+
+
+def atlas_image(stock):
+    """Decode the stock UI atlas (top mip) to a PIL RGBA image."""
+    import texture2ddecoder
+    from PIL import Image
+    tt, tg = P.typesym('CGTextureResource'), P.typesym('CGTextureResource', True)
+    cpu, gpu = stock.get(tt, NAV_ATLAS), stock.get(tg, NAV_ATLAS)
+    w, h = struct.unpack_from('<II', cpu, 0xc4)
+    if struct.unpack_from('<I', gpu, 128)[0] != 99:
+        raise SystemExit('Unexpected tablet atlas format (game update?)')
+    bgra = texture2ddecoder.decode_bc7(gpu[148:148 + (w // 4) * (h // 4) * 16], w, h)
+    return Image.frombytes('RGBA', (w, h), bgra, 'raw', 'BGRA')
+
+
+def rect_of(row):
+    return list(struct.unpack_from('<4f', row, 0x34))
+
+
+def respace_stock_tabs(nav):
+    """Move the 4 stock tab icons (idle + selected sprite pairs) into their new slots.
+
+    Returns [(old_center, new_center, idle_index, selected_index)] left to right."""
+    pairs = [(1, 2), (3, 4), (5, 6), (7, 8)]
+    moves = []
+    for k, (idle, sel) in enumerate(pairs):
+        a, b = rect_of(nav.elements[idle]), rect_of(nav.elements[sel])
+        old = (a[0] + a[2]) / 2
+        uv_idle, uv_sel = struct.unpack_from('<4f', nav.elements[idle], 0x90), struct.unpack_from('<4f', nav.elements[sel], 0x90)
+        assert abs(old - 204.8 * (k + 1)) < 2 and abs((b[0] + b[2]) / 2 - old) < 2, ('Unexpected stock tab layout', k, a, b)
+        assert uv_sel[1] < uv_idle[1], 'Unexpected stock tab sprite order'
+        new = TAB_SLOT_CENTERS[STOCK_SLOTS[k]]
+        for i in (idle, sel):
+            r = rect_of(nav.elements[i])
+            struct.pack_into('<4f', nav.elements[i], 0x34, r[0] + new - old, r[1], r[2] + new - old, r[3])
+        moves.append((old, new, idle, sel))
+    return moves
 
 
 def fix_texture_count(canvas):
@@ -100,8 +147,26 @@ def build():
     sprite_template = nav.elements[0]
     assert struct.unpack_from('<I', sprite_template, 8)[0] == 3
 
-    # Navigation: label in the free left slot.
-    nav_label = nav.label(donor.elements[1], 'echo_arcade_tab_label_v1', TAB_LABEL, TAB_RECT, 26)
+    # Navigation: 6 centred icon tabs. Our icon pairs (idle + selected) are drawn on the
+    # stock List icon's frames, so they match the other tabs exactly.
+    moves = respace_stock_tabs(nav)
+    list_idle, list_sel = nav.elements[3], nav.elements[4]
+    icon_w, icon_h, icon_pixels, icon_uvs = tab_icons(
+        atlas_image(stock), struct.unpack_from('<4f', list_idle, 0x90), struct.unpack_from('<4f', list_sel, 0x90))
+
+    def tab_sprite(template, name, slot, uv, hidden):
+        index = nav.append(template, name, tab_rect(slot), parent=struct.unpack_from('<i', template, 0x5c)[0], hidden=hidden)
+        row = nav.elements[index]
+        row[0x24:0x34] = template[0x24:0x34]  # keep the stock sprite's layout fields
+        struct.pack_into('<4f', row, 0x78, 1, 1, 1, 1)
+        struct.pack_into('<Q', row, 0x88, ICON_TEXTURE)
+        struct.pack_into('<4f', row, 0x90, *uv)
+        return index
+
+    nav_icon = tab_sprite(list_idle, 'echo_arcade_tab_icon_v1', ARCADE_SLOT, icon_uvs['arcade'][0], False)
+    nav_selected = tab_sprite(list_sel, 'echo_arcade_tab_selected_v1', ARCADE_SLOT, icon_uvs['arcade'][1], True)
+    tab_sprite(list_idle, 'echo_arcade_settings_icon_v1', SETTINGS_SLOT, icon_uvs['settings'][0], False)
+    nav_settings_selected = tab_sprite(list_sel, 'echo_arcade_settings_selected_v1', SETTINGS_SLOT, icon_uvs['settings'][1], True)
 
     # Page canvas.
     page = empty_canvas(stock.get(cv, TITLE_DONOR), PAGE_W, PAGE_H)
@@ -129,9 +194,10 @@ def build():
     for c in (root, nav, page):
         fix_texture_count(c)
         c.validate()
-    assert struct.unpack_from('<I', page.header, 0x28)[0] == 1 and struct.unpack_from('<I', nav.header, 0x28)[0] == 9
+    assert struct.unpack_from('<I', page.header, 0x28)[0] == 1 and struct.unpack_from('<I', nav.header, 0x28)[0] == 13
     assert [bytes(r) for r in root.elements[:7]] == old_root
-    assert [bytes(r) for r in nav.elements[:9]] == old_nav
+    for i, (old, new) in enumerate(zip(old_nav, nav.elements[:9])):  # stock tabs: only their x position moved
+        assert old[:0x34] == new[:0x34] and old[0x44:] == new[0x44:], f'nav element {i} changed beyond its rect'
 
     # Buttons: tab + touch grid, cloned from a stock navigation button.
     bt = P.typesym('CR15ButtonInteractCR')
@@ -150,16 +216,22 @@ def build():
         struct.pack_into('<2f', row, 0x9c, (x1 - x0) / 2 * s, (y1 - y0) / 2 * s)
         rows.append(bytes(row))
 
-    for r in rows:
+    # Stock tab hitboxes follow their icons into the new slots.
+    moved = set()
+    for i, r in enumerate(rows):
         if u64(r, 8) != ACTOR or not 0x275876572b742791 <= u64(r, 0) <= 0x275876572b742794:
             continue
         x, y = struct.unpack_from('<2f', r, 0x80)
-        w, h = struct.unpack_from('<2f', r, 0x9c)
-        k = 1 / s
-        rect = ((x - w) * k, (-y - h) * k, (x + w) * k, (-y + h) * k)
-        t = TAB_RECT
-        assert t[2] <= rect[0] or t[0] >= rect[2] or t[3] <= rect[1] or t[1] >= rect[3], ('Overlapping stock tab', rect)
-    add_button(TAB_BUTTON, TAB_RECT)
+        old, new, _, _ = min(moves, key=lambda m: abs(m[0] - x / s))
+        assert abs(old - x / s) < 3, ('Stock tab hitbox not under a stock icon', x / s)
+        row = bytearray(r)
+        struct.pack_into('<f', row, 0x80, new * s)
+        rows[i] = bytes(row)
+        moved.add(new)
+    assert len(moved) == 4, 'Expected 4 stock tab hitboxes'
+    changed_rows = {i for i, r in enumerate(rows) if 0x275876572b742791 <= u64(r, 0) <= 0x275876572b742794 and u64(r, 8) == ACTOR}
+    add_button(TAB_BUTTON, tab_rect(ARCADE_SLOT))
+    add_button(SETTINGS_BUTTON, tab_rect(SETTINGS_SLOT))
     sx0, sy0, sx1, sy1 = SCREEN_RECT
     cw, ch = (sx1 - sx0) / GRID_COLS, (sy1 - sy0) / GRID_ROWS
     for r in range(GRID_ROWS):
@@ -169,15 +241,20 @@ def build():
     hdr = bytearray(original[:56])
     descriptor(hdr, 0, len(rows), stride)
     buttons = bytes(hdr) + b''.join(rows)
-    assert buttons[56:len(original)] == original[56:]
+    _, original_rows = P.parse_cr(original)
+    for i, r in enumerate(original_rows):
+        assert i in changed_rows or rows[i] == r, 'Unrelated button record changed'
 
-    tex_cpu, tex_gpu = texture_pair(stock)
+    tex_cpu, tex_gpu = texture_pair(stock, TEX_W, TEX_H, splash_bgra())
+    icon_cpu, icon_gpu = texture_pair(stock, icon_w, icon_h, icon_pixels)
     patcher.add_item('CUICanvasResource', False, f'0x{ROOT_CANVAS:016x}', root.serialize())
     patcher.add_item('CUICanvasResource', False, f'0x{NAV_CANVAS:016x}', nav.serialize())
     patcher.add_item('CUICanvasResource', False, f'0x{PAGE:016x}', page.serialize())
     patcher.add_item('CR15ButtonInteractCR', False, f'0x{LEVEL:016x}', buttons)
     patcher.add_item('CGTextureResource', False, f'0x{TEXTURE:016x}', tex_cpu)
     patcher.add_item('CGTextureResource', True, f'0x{TEXTURE:016x}', tex_gpu)
+    patcher.add_item('CGTextureResource', False, f'0x{ICON_TEXTURE:016x}', icon_cpu)
+    patcher.add_item('CGTextureResource', True, f'0x{ICON_TEXTURE:016x}', icon_gpu)
     while (GAME_PACKAGES / f'{MID}_{patcher.mf.npkg}').exists():
         i = patcher.mf.npkg
         patcher.mf.C.append([i, (GAME_PACKAGES / f'{MID}_{i}').stat().st_size, 0, 0])
@@ -200,7 +277,7 @@ def build():
     meta = dict(schema=1, base_manifest_sha256=sha(base_manifest),
                 manifest_sha256=sha((OUT / 'manifests' / MID).read_bytes()),
                 package=package_name, package_sha256=sha((OUT / 'packages' / package_name).read_bytes()),
-                page=f'{PAGE:016x}', texture=f'{TEXTURE:016x}', tab_button=f'{TAB_BUTTON:016x}',
+                page=f'{PAGE:016x}', texture=f'{TEXTURE:016x}', tab_button=f'{TAB_BUTTON:016x}', settings_button=f'{SETTINGS_BUTTON:016x}',
                 grid=[GRID_COLS, GRID_ROWS], texture_size=[TEX_W, TEX_H])
     (OUT / 'arcade_tab.json').write_text(json.dumps(meta, indent=2))
 
@@ -208,10 +285,12 @@ def build():
     cells = ','.join(f'0x{cell_symbol(c, r):016x}' for r in range(GRID_ROWS) for c in range(GRID_COLS))
     (GENERATED / 'arcade_tab.h').write_text(
         '// Generated by tools/build_arcade_tab.py -- do not edit.\n#pragma once\n#include <cstdint>\n'
-        f'constexpr uint64_t ARCADE_TAB=0x{TAB_BUTTON:016x}, ARCADE_PAGE_MARKER=0x{P.sym("echo_arcade_background_v1"):016x};\n'
-        f'constexpr uint64_t ARCADE_ROOT_MARKER=0x{P.sym("echo_arcade_page_child_v1"):016x}, ARCADE_NAV_MARKER=0x{P.sym("echo_arcade_tab_label_v1"):016x};\n'
+        f'constexpr uint64_t ARCADE_TAB=0x{TAB_BUTTON:016x}, SETTINGS_TAB=0x{SETTINGS_BUTTON:016x}, ARCADE_PAGE_MARKER=0x{P.sym("echo_arcade_background_v1"):016x};\n'
+        f'constexpr uint64_t ARCADE_ROOT_MARKER=0x{P.sym("echo_arcade_page_child_v1"):016x}, ARCADE_NAV_MARKER=0x{P.sym("echo_arcade_tab_icon_v1"):016x};\n'
         f'constexpr unsigned ARCADE_PAGE_ELEMENTS={len(page.elements)}, ARCADE_ROOT_ELEMENTS={len(root.elements)}, ARCADE_NAV_ELEMENTS={len(nav.elements)};\n'
-        f'constexpr unsigned ARCADE_ROOT_CHILD={child}, ARCADE_ROOT_HEADER={header}, ARCADE_ROOT_TITLE={title}, ARCADE_NAV_LABEL={nav_label};\n'
+        f'constexpr unsigned ARCADE_ROOT_CHILD={child}, ARCADE_ROOT_HEADER={header}, ARCADE_ROOT_TITLE={title};\n'
+        f'constexpr unsigned ARCADE_NAV_ICON={nav_icon}, ARCADE_NAV_SELECTED={nav_selected}, SETTINGS_NAV_SELECTED={nav_settings_selected};\n'
+        f'constexpr unsigned ARCADE_NAV_STOCK_SELECTED[]={{{",".join(str(m[3]) for m in moves)}}};\n'
         f'constexpr unsigned ARCADE_PAGE_SCREEN={screen}, ARCADE_PAGE_STATUS={status};\n'
         f'constexpr unsigned ARCADE_GRID_COLS={GRID_COLS}, ARCADE_GRID_ROWS={GRID_ROWS};\n'
         f'constexpr unsigned ARCADE_TEX_W={TEX_W}, ARCADE_TEX_H={TEX_H};\n'

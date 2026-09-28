@@ -18,6 +18,7 @@ struct Rect {
 };
 
 void hostLog(const char* format, ...);
+std::wstring localAppData();  // %LOCALAPPDATA%, even when the variable is missing
 
 // ---- configuration (EchoArcade\arcade.ini, written by the installer) ----
 struct Config {
