@@ -25,7 +25,7 @@ A new **Arcade** tab (gamepad icon) on Echo VR's hand tablet that runs **Balatro
 | Movies | Your video folders (`apps\movies` and Windows *Videos* by default) in mpv | Tap for controls: ±10/30 s, pause, seek bar, volume, subtitles, audio track |
 | Plex | Movies and TV from your Plex server, direct play in mpv; resume points sync back to Plex | Link once with a code at plex.tv/link, then browse libraries, *Continue Watching*, shows, seasons and episodes |
 
-Tap **≡** (Balatro) or **HOME** (RetroArch) for Resume / Quit to launcher / Dock. The **gear** tab is **Settings**: tablet size (0.5x to 4x, applied live by rescaling the tablet's own transform; experimental) and view (FOV) sliders, saved to `echo_tweaks.ini`.
+Tap **≡** (Balatro) or **HOME** (RetroArch) for Resume / Quit to launcher / Dock. The **gear** tab is **Settings**: tablet size (0.5x to 4x, applied live; experimental), saved to `echo_tweaks.ini`. It resizes the tablet's screens (the canvases and their touch areas), not the tablet's 3D body, which stays stock size. The view (FOV) is not on the tablet: set it in `echo_tweaks.ini` (below).
 
 ### Dock on a lobby poster
 
@@ -113,7 +113,7 @@ Put your ROMs in `apps\roms\<system>\` (see [docs/ROMS.md](docs/ROMS.md)); the p
 
 **Adding a ROM set:** `tools\import_roms.py "<set>.zip" <system>` unpacks a set (including zips nested inside it) into `apps\roms\<system>\`.
 
-**FOV tweak:** `plugins\EchoArcade\echo_tweaks.ini` sets `[fov] x=` / `y=` multipliers (0.5 to 2.0), the same idea as EchoVR-Haptics' FovMultiplier, so you don't need that tool (it replaces EchoLoader; see Troubleshooting). Keep x and y equal (e.g. 1.4) for recordings; stretching one axis looks warped. The install seeds it from an old `haptics_config.txt` if present and never overwrites your edits.
+**FOV tweak:** `plugins\EchoArcade\echo_tweaks.ini` sets `[fov] x=` / `y=` multipliers (1.0 to 2.0; below 1.0 would cut off the edges of the view), edited only in that file, the same idea as EchoVR-Haptics' FovMultiplier, so you don't need that tool (it replaces EchoLoader; see Troubleshooting). Keep x and y equal (e.g. 1.4) for recordings; stretching one axis looks warped. The install seeds it from an old `haptics_config.txt` if present and never overwrites your edits.
 
 **Plex privacy:** linking stores a Plex token in `%LOCALAPPDATA%\EchoArcade\plex.json`, never in the repo or the logs. *Unlink Plex* at the bottom of the Plex library list removes it. Streams go straight from your server to this PC.
 

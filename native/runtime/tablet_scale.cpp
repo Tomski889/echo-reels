@@ -19,9 +19,12 @@ constexpr uint64_t TABLET_CANVAS = 0x30b4d30bbcb8d444;
 
 std::vector<uint32_t*> hits;  // -> width, height, pixels-per-metre
 std::atomic<float> desired{1.f}, applied{1.f};
-std::atomic<bool> present{false}, rescan{true};
+std::atomic<bool> present{false};
 std::atomic<int> failures{0};
-float written = STOCK_SIZE;  // world width we last wrote (recognises our own edits on a rescan)
+// Every width written this session. The engine makes new copies of the canvas size (a page's
+// canvas component is rebuilt when the page loads) from whatever size it had then, so a
+// copy can hold any of these; each resize rescans and rewrites them all.
+std::vector<float> written{STOCK_SIZE};
 
 bool scannable(const MEMORY_BASIC_INFORMATION& m) {
     if (m.State != MEM_COMMIT || m.Type != MEM_PRIVATE) return false;
@@ -34,7 +37,7 @@ float f32(const uint32_t* p) { float f; memcpy(&f, p, 4); return f; }
 bool isSize(const uint32_t* p) {
     if (p[0] != p[1] || f32(p + 2) != PPM) return false;
     float w = f32(p);
-    return w == STOCK_SIZE || w == written;
+    return std::find(written.begin(), written.end(), w) != written.end();
 }
 
 template <class F> bool guarded(F f) {
@@ -82,29 +85,33 @@ bool writeSize(uint32_t* p, float w) {
 }
 
 void worker() {
+    std::vector<uint32_t*> previous;
     for (;;) {
         Sleep(100);
         float want = desired;
-        if (!present) continue;
-        if (rescan) {
-            if (want == 1.f && written == STOCK_SIZE) { rescan = false; continue; }  // nothing to do
-            if (failures >= 3) { rescan = false; continue; }
-            Sleep(1500);  // let the lobby finish creating the tablet
-            scan();
-            rescan = false;
-            applied = -1.f;
-        }
-        if (want == applied) continue;
+        if (!present || want == applied || failures >= 3) continue;
+        // Let the slider settle, and a freshly loaded tablet finish creating its canvases.
+        Sleep(applied < 0 ? 1500 : 300);
+        if (desired != want) continue;
+        if (want == 1.f && written.size() == 1) { applied = 1.f; continue; }  // never resized: nothing to undo
+        scan();
+        for (auto* p : previous)  // copies the engine changed or freed since the last resize
+            if (std::find(hits.begin(), hits.end(), p) == hits.end()) {
+                float v[3] = {};
+                bool readable = guarded([&] { memcpy(v, p, sizeof(v)); return true; });
+                logf("tablet:   %p no longer a tablet size copy (%s %.3f %.3f %.1f)", static_cast<void*>(p),
+                     readable ? "now" : "unreadable", v[0], v[1], v[2]);
+            }
         float w = STOCK_SIZE * want;
         int ok = 0;
         for (auto* p : hits) ok += writeSize(p, w);
-        if (ok) written = w;
-        hits.erase(std::remove_if(hits.begin(), hits.end(), [](uint32_t* p) { return !guarded([p] { return isSize(p); }); }), hits.end());
+        if (ok && std::find(written.begin(), written.end(), w) == written.end()) written.push_back(w);
+        previous = hits;
         logf("tablet: size %.2f -> %d canvas copies", want, ok);
-        applied = ok ? want : 1.f;
-        if (ok) failures = 0;
-        else if (++failures >= 3) logf("tablet: canvas size not found; resizing paused until the tablet reloads");
-        else { rescan = true; Sleep(3000); }
+        if (ok) { applied = want; failures = 0; continue; }
+        applied = 1.f;
+        if (++failures >= 3) logf("tablet: canvas size not found; resizing paused until the tablet reloads");
+        else Sleep(3000);
     }
 }
 
@@ -131,7 +138,7 @@ float appliedScale() {
 }
 
 void tabletPresent(bool p) {
-    if (p && !present) { rescan = true; failures = 0; }
+    if (p && !present) { applied = -1.f; failures = 0; }  // a new tablet: find and size its canvases
     if (!p) applied = 1.f;
     present = p;
 }

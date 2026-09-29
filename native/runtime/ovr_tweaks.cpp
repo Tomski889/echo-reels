@@ -4,7 +4,8 @@
 // (ovr_GetHmdDesc -> DefaultEyeFov), so Echo renders a wider or taller view.
 // In the headset the compositor maps it back; the desktop mirror and recordings
 // get the wider view. Same approach as heisthecat31/EchoVR-Haptics' FovMultiplier.
-// Settings: plugins\EchoArcade\echo_tweaks.ini  [fov] x=1.0 y=1.0 (0.5 .. 2.0).
+// Settings: plugins\EchoArcade\echo_tweaks.ini  [fov] x=1.0 y=1.0 (1.0 .. 2.0). Below 1.0 the game
+// would render less than the lenses show, cutting off the edges of the view.
 #include "ovr_tweaks.h"
 #include "log.h"
 #include "../vendor/minhook/include/MinHook.h"
@@ -55,7 +56,7 @@ HmdDesc __cdecl hookedGetHmdDesc(void* session) {
 float readFloat(const std::wstring& ini, const wchar_t* section, const wchar_t* key) {
     wchar_t buf[32];
     GetPrivateProfileStringW(section, key, L"1.0", buf, 32, ini.c_str());
-    return std::clamp(float(_wtof(buf)), 0.5f, 2.0f);
+    return std::clamp(float(_wtof(buf)), 1.0f, 2.0f);
 }
 
 }  // namespace

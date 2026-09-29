@@ -180,16 +180,16 @@ def write_tweaks(p):
                 pass
         # One-axis stretch (e.g. x1.0 y1.5) looks warped in a wide recording window.
         x = y = max(x, y)
-    target.write_text(f"""; Echo VR tweaks (read when Echo starts; edit here or on the tablet's SETTINGS tab)
+    target.write_text(f"""; Echo VR tweaks (read when Echo starts)
 [fov]
-; Eye field-of-view multipliers, 0.8 to 2.0 (1.0 = normal). Widens the view the
-; game renders: visible in the desktop mirror / recordings.
+; Eye field-of-view multipliers, 1.0 to 2.0 (1.0 = normal). Widens the view the
+; game renders: visible in the desktop mirror / recordings. Edited only here.
 ; Keep x and y equal for natural proportions. Higher values cost GPU (1.4 = ~2x the pixels).
 x={x:.2f}
 y={y:.2f}
 
 [tablet]
-; Tablet size, 0.75 to 2.0 (saved by the SETTINGS tab; applied by a future plugin update)
+; Tablet size, 0.5 to 4.0 (saved by the tablet's SETTINGS tab, applied live)
 scale=1.00
 """, encoding='utf-8')
     print(f'Created {target.name} (fov x={x:.2f} y={y:.2f})')

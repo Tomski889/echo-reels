@@ -373,9 +373,8 @@ private:
         return p.substr(0, p.find_last_of(L"\\/")) + L"\\echo_tweaks.ini";
     }
     void loadSettings() {
-        settings_ = {{L"TABLET SIZE", L"tablet", L"scale", .5f, 4.f, .05f, 1.f},
-                     {L"VIEW WIDTH (FOV)", L"fov", L"x", .8f, 2.f, .05f, 1.f},
-                     {L"VIEW HEIGHT (FOV)", L"fov", L"y", .8f, 2.f, .05f, 1.f}};
+        // FOV is not here on purpose: it is set by hand in echo_tweaks.ini [fov].
+        settings_ = {{L"TABLET SIZE", L"tablet", L"scale", .5f, 4.f, .05f, 1.f}};
         for (auto& s : settings_) {
             wchar_t buf[32];
             GetPrivateProfileStringW(s.section, s.key, L"1.0", buf, 32, tweaksPath().c_str());
@@ -432,8 +431,8 @@ private:
             canvas_.fill({track.x0, track.y0, fill, track.y1}, rgb(70, 150, 190));
             canvas_.fill({fill - 14, track.y0 - 16, fill + 14, track.y1 + 16}, rgb(235, 240, 250));
         }
-        canvas_.text({24, 516, 1004, 572}, L"Saved instantly. Tablet size changes live (it grows around the tablet's centre); "
-                     L"view (FOV) applies the next time Echo VR starts.", 17, rgb(150, 160, 180), false, 0);
+        canvas_.text({24, 516, 1004, 572}, L"Saved instantly; the tablet size changes live. "
+                     L"View (FOV) is set in echo_tweaks.ini.", 17, rgb(150, 160, 180), false, 0);
     }
 
     // Stop whatever the game was being fed when the tab changes under a held finger.
