@@ -500,8 +500,23 @@ void afterFire(void* cs, unsigned handle) {
         InterlockedIncrement(&shared->shots);
         if (logged++ < 20) logf("light gun: hit pixel %d,%d (%.1f m from the muzzle)", x, y, metres);
     } else if (logged++ < 20) {
-        logf("light gun: shot from %.2f %.2f %.2f dir %.2f %.2f %.2f missed the docked poster",
-             worldOrigin.x, worldOrigin.y, worldOrigin.z, worldDir.x, worldDir.y, worldDir.z);
+        // Which known poster the shot went nearest to: tells a bad poster lookup from a bad aim.
+        U nearActor = 0;
+        float closest = 1e9f;
+        Vec unit = worldDir * (1.f / length(worldDir));
+        unsigned count = at<unsigned short>(dock.cs, 0xfc);
+        P keys = at<P>(dock.cs, 0x108);
+        for (unsigned i = 0; i < count && keys; i++) {
+            int which = posterOf(dock.gs, at<U>(keys, size_t(i) * 16));
+            if (which < 0) continue;
+            const PosterInfo& info = POSTERS[which];
+            Xform level{{info.rot[0], info.rot[1], info.rot[2], info.rot[3]}, {info.pos[0], info.pos[1], info.pos[2]}, info.scale[0]};
+            Vec c = dock.space.apply(level.apply(meshes[info.mesh].center)) - worldOrigin;
+            float along = std::max(0.f, dot(c, unit)), d = length(c - unit * along);
+            if (d < closest) { closest = d; nearActor = info.actor; }
+        }
+        logf("light gun: shot from %.2f %.2f %.2f dir %.2f %.2f %.2f missed the docked poster %016llx; nearest poster to the shot %016llx (%.1f m off)",
+             worldOrigin.x, worldOrigin.y, worldOrigin.z, worldDir.x, worldDir.y, worldDir.z, dock.actor, nearActor, closest);
     }
 }
 

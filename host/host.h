@@ -31,9 +31,9 @@ struct Config {
     std::wstring dir;                 // folder containing ArcadeHost.exe
     std::wstring love;                // love.exe (11.5)
     std::wstring balatroSteam;        // prepared Steam game folder (extracted + bridge)
-    std::wstring balatroPortmaster;   // prepared PortMaster build folder
     std::wstring retroarch;           // retroarch.exe
     std::wstring doomCore, doomWad;   // prboom core + WAD for the DOOM tile
+    std::wstring duckHuntCore, duckHuntRom;  // Nestopia core + ROM for the DUCK HUNT tile
     std::wstring roms;                // RetroArch's Load Content start folder
     std::wstring mpv;                 // mpv.exe
     std::vector<std::wstring> movies; // video folders (arcade.ini movies=, ; separated)

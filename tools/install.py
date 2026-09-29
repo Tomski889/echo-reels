@@ -63,10 +63,11 @@ def write_ini(target: Path):
 [paths]
 love={apps / 'love/love-11.5-win64/love.exe'}
 balatro_steam={apps / 'balatro/steam'}
-balatro_portmaster={apps / 'balatro/portmaster'}
 retroarch={apps / 'retroarch/retroarch.exe'}
 doom_core={apps / 'retroarch/cores/prboom_libretro.dll'}
 doom_wad={apps / 'roms/doom/doom1.wad'}
+duck_hunt_core={apps / 'retroarch/cores/nestopia_libretro.dll'}
+duck_hunt_rom={apps / 'roms/nes/Duck Hunt (World).nes'}
 roms={apps / 'roms'}
 mpv={apps / 'mpv/mpv.exe'}
 ; video folders for MOVIES, separated by ;  (environment variables allowed)

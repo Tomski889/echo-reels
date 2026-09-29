@@ -6,7 +6,7 @@
 #include <deque>
 #include <thread>
 
-enum class AppId { BalatroSteam, BalatroPortmaster, RetroArch, Doom, Movies, Plex };
+enum class AppId { BalatroSteam, DuckHunt, RetroArch, Doom, Movies, Plex };
 
 struct AppInfo {
     AppId id;

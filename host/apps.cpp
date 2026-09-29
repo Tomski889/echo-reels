@@ -88,7 +88,7 @@ void writeRetroConfig(const Config& c, const std::wstring& path) {
 
 }  // namespace
 
-bool isRetro(AppId id) { return id == AppId::RetroArch || id == AppId::Doom; }
+bool isRetro(AppId id) { return id == AppId::RetroArch || id == AppId::Doom || id == AppId::DuckHunt; }
 bool isVideo(AppId id) { return id == AppId::Movies || id == AppId::Plex; }
 int writePlaylists(const Config& c);  // playlists.cpp
 
@@ -104,14 +104,13 @@ static std::wstring redact(std::wstring s) {
 
 std::vector<AppInfo> listApps(const Config& c) {
     std::vector<AppInfo> apps;
-    auto balatro = [&](AppId id, const wchar_t* sub, const std::wstring& dir, uint32_t accent) {
-        std::wstring missing;
-        if (!exists(c.love)) missing = L"LOVE runtime missing - rerun the installer";
-        else if (!exists(dir + L"\\main.lua")) missing = L"Install Balatro on Steam, then rerun prepare";
-        apps.push_back({id, L"BALATRO", sub, missing, accent});
-    };
-    balatro(AppId::BalatroSteam, L"Steam original", c.balatroSteam, rgb(222, 64, 64));
-    balatro(AppId::BalatroPortmaster, L"PortMaster handheld UI", c.balatroPortmaster, rgb(64, 132, 230));
+    std::wstring balatroMissing = !exists(c.love) ? L"LOVE runtime missing - rerun the installer" :
+                                  !exists(c.balatroSteam + L"\\main.lua") ? L"Install Balatro on Steam, then rerun prepare" : L"";
+    apps.push_back({AppId::BalatroSteam, L"BALATRO", L"Steam original", balatroMissing, rgb(222, 64, 64)});
+    std::wstring duckMissing = !exists(c.retroarch) ? L"RetroArch missing" :
+                               !exists(c.duckHuntCore) ? L"Nestopia core missing" :
+                               !exists(c.duckHuntRom) ? L"Put Duck Hunt (World).nes in roms\\nes" : L"";
+    apps.push_back({AppId::DuckHunt, L"DUCK HUNT", L"NES Zapper light gun", duckMissing, rgb(64, 132, 230)});
     apps.push_back({AppId::RetroArch, L"RETROARCH", L"All cores - full menu",
                     exists(c.retroarch) ? L"" : L"RetroArch missing - rerun the installer", rgb(150, 90, 220)});
     std::wstring doomMissing = !exists(c.retroarch) ? L"RetroArch missing" :
@@ -146,22 +145,15 @@ bool Session::launch(AppId id, const std::wstring& target, double startSeconds) 
     AudioTarget audio = findAudioDevice(config_.audioDevice);
     auto setEnv = [](const wchar_t* k, const std::wstring& v) { SetEnvironmentVariableW(k, v.empty() ? nullptr : v.c_str()); };
     setEnv(L"ECHO_ARCADE_PORT", L"");
-    if (id == AppId::BalatroSteam || id == AppId::BalatroPortmaster) {
-        bool pm = id == AppId::BalatroPortmaster;
+    if (id == AppId::BalatroSteam) {
         exe = config_.love;
-        cwd = pm ? config_.balatroPortmaster : config_.balatroSteam;
+        cwd = config_.balatroSteam;
         // --fused makes LOVE use %APPDATA%\Balatro, i.e. the Steam game's own saves.
-        args = (pm ? L"\"" : L"--fused \"") + cwd + L"\"";
+        args = L"--fused \"" + cwd + L"\"";
         setEnv(L"ECHO_ARCADE_PORT", std::to_wstring(config_.balatroPort));
-        setEnv(L"ECHO_ARCADE_STEAM", pm ? L"0" : L"1");
+        setEnv(L"ECHO_ARCADE_STEAM", L"1");
         setEnv(L"ECHO_ARCADE_WIDTH", std::to_wstring(SCREEN_W));
         setEnv(L"ECHO_ARCADE_HEIGHT", std::to_wstring(SCREEN_H));
-        setEnv(L"BALATRO_PM_WINDOWS_WINDOWED", L"1");
-        setEnv(L"BALATRO_PM_WINDOWS_WIDTH", std::to_wstring(SCREEN_W));
-        setEnv(L"BALATRO_PM_WINDOWS_HEIGHT", std::to_wstring(SCREEN_H));
-        setEnv(L"BALATRO_PM_PERF_OPTIMIZATIONS", L"1");
-        setEnv(L"BALATRO_PM_FPS_CAP", L"60");
-        setEnv(L"BALATRO_PM_SKIP_RUMBLE", L"1");
     } else if (isVideo(id)) {
         exe = config_.mpv;
         cwd = folderOf(exe);
@@ -178,6 +170,8 @@ bool Session::launch(AppId id, const std::wstring& target, double startSeconds) 
         writeRetroConfig(config_, cfg);
         args = L"--appendconfig \"" + cfg + L"\"";
         if (id == AppId::Doom) args += L" -L \"" + config_.doomCore + L"\" \"" + config_.doomWad + L"\"";
+        // Its Nestopia remap (config\remaps\Nestopia\Duck Hunt (World).rmp) plugs the Zapper into port 2.
+        else if (id == AppId::DuckHunt) args += L" -L \"" + config_.duckHuntCore + L"\" \"" + config_.duckHuntRom + L"\"";
         else hostLog("playlists: %d game(s) found in %ls", writePlaylists(config_), config_.roms.c_str());
     }
     std::wstring cmd = L"\"" + exe + L"\" " + args;

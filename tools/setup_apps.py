@@ -7,7 +7,6 @@
   apps/mpv                mpv 0.41 (movie player; local files and Plex)
   apps/retroarch          RetroArch stable (portable) + a starter set of cores
   apps/roms/doom          doom1.wad (shareware) + prboom.wad
-  apps/downloads/pm       PortMaster's Balatro port (Lua patches only)
 
 Nothing here downloads Balatro or any commercial ROM: bring your own.
 """
@@ -107,11 +106,6 @@ def main():
     for system in SYSTEMS:
         (APPS / 'roms' / system).mkdir(exist_ok=True)
     shutil.copy2(ROOT / 'docs/ROMS.md', APPS / 'roms/README.md')
-
-    pm = DL / 'pm'
-    if not pm.exists():
-        git('clone', '--depth', '1', '--filter=blob:none', '--sparse', 'https://github.com/PortsMaster/PortMaster-New.git', str(pm))
-        git('sparse-checkout', 'set', 'ports/balatro', cwd=pm)
     print('Done. Next: python tools/prepare_balatro.py, build.cmd, python tools/install.py install')
     return 0
 

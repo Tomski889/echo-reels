@@ -1,13 +1,13 @@
 # Echo Arcade
 
-A new **Arcade** tab (gamepad icon) on Echo VR's hand tablet that runs **Balatro**, **RetroArch** (30+ systems, full menu, plus DOOM), your **movies** and your **Plex** server on the tablet screen, all by touch. It's built for private community servers. Everything runs locally on your PC and nothing is networked: only you see your tablet.
+A new **Arcade** tab (gamepad icon) on Echo VR's hand tablet that runs **Balatro**, **Duck Hunt**, **RetroArch** (30+ systems, full menu, plus DOOM), your **movies** and your **Plex** server on the tablet screen, all by touch. It's built for private community servers. Everything runs locally on your PC and nothing is networked: only you see your tablet.
 
 ```
 ┌──────────── Echo VR hand tablet ────────────┐
 │  ECHO ARCADE                tap a game      │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐     │
-│  │ BALATRO  │ │ BALATRO  │ │RETROARCH │     │
-│  │ Steam    │ │PortMaster│ │ 30+ sys. │     │
+│  │ BALATRO  │ │DUCK HUNT │ │RETROARCH │     │
+│  │ Steam    │ │ Zapper   │ │ 30+ sys. │     │
 │  └──────────┘ └──────────┘ └──────────┘     │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐     │
 │  │ DOOM     │ │ MOVIES   │ │ PLEX     │     │
@@ -19,7 +19,7 @@ A new **Arcade** tab (gamepad icon) on Echo VR's hand tablet that runs **Balatro
 | Tile | What it runs | Controls |
 | --- | --- | --- |
 | Balatro: Steam original | Your own Steam copy, unmodified content, **your Steam saves and achievements** | Tap = click, slide = drag cards |
-| Balatro: PortMaster | [PortMaster's handheld build](https://portmaster.games/detail.html?name=balatro) (bigger text, status-bar HUD, effects off), separate saves | Same |
+| Duck Hunt | *Duck Hunt (World).nes* from `apps\roms\nes` in Nestopia, NES Zapper on port 2 (its remap) | Dock the arcade and shoot the poster; tablet RetroPad for Start/Select |
 | RetroArch | RetroArch 1.22 + cores for 30+ systems (Atari to PS2/GameCube/Dreamcast, arcade, DOS). Your ROMs appear under **Playlists**, already paired with a core | On-screen RetroPad: D-pad or **analog stick**, ABXY, L/R, L2/R2, Start/Select, MENU |
 | DOOM | Shareware DOOM via the prboom core | Same RetroPad |
 | Movies | Your video folders (`apps\movies` and Windows *Videos* by default) in mpv | Tap for controls: ±10/30 s, pause, seek bar, volume, subtitles, audio track |
@@ -91,12 +91,12 @@ Requirements:
 - An Echo VR install with **EchoLoader** (the `dbgcore.dll` + `echoloader.json` setup used by community servers).
 - Visual Studio 2022 with *Desktop development with C++*.
 - Python 3.10+.
-- Balatro on Steam, if you want the Balatro tiles.
+- Balatro on Steam, if you want the Balatro tile. *Duck Hunt (World).nes* in `apps\roms\nes`, for the Duck Hunt tile.
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\pip install zstandard==0.25.0 pillow texture2ddecoder
-.venv\Scripts\python tools\setup_apps.py        # LÖVE, mpv, RetroArch + 30 cores, DOOM shareware, PortMaster patches
+.venv\Scripts\python tools\setup_apps.py        # LÖVE, mpv, RetroArch + 30 cores, DOOM shareware
 .venv\Scripts\python tools\prepare_balatro.py   # finds Balatro.exe in your Steam libraries
 .\build.cmd                                      # EchoArcade.dll, ArcadeHost.exe, runs the IPC test
 # close Echo VR, then:
@@ -151,7 +151,6 @@ On the desktop, every tile has been driven end to end through the real host, cap
 ## Credits
 
 - **[heisthecat31/Doom-on-EchoVR](https://github.com/heisthecat31/Doom-on-EchoVR):** the reverse-engineered tablet canvas format, button records, hook addresses and package tools this builds on. `setup_apps.py` fetches it at a pinned commit; it is not redistributed here.
-- **[PortMaster](https://github.com/PortsMaster/PortMaster-New):** the Balatro handheld patches; `prepare_balatro.py` ports its patch script.
 - **[MinHook](https://github.com/TsudaKageyu/minhook)** (BSD-2), included in `native/vendor/minhook`.
 - **[LÖVE](https://love2d.org), [RetroArch/libretro](https://www.libretro.com), [prboom](https://github.com/libretro/libretro-prboom).**
 - Balatro © LocalThunk / Playstack. You need your own copy; no game files are included.

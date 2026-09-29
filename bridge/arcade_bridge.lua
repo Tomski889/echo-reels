@@ -9,7 +9,7 @@ local port = tonumber(os.getenv("ECHO_ARCADE_PORT") or "")
 if not port then return end
 
 -- Steam: the Steam copy uses the real Steam API (achievements, stats) when Steam is
--- running. Otherwise, and always for the PortMaster build, love.load gets a stub
+-- running. Otherwise love.load gets a stub
 -- instead of quitting because luasteam could not start.
 do
     local real = false

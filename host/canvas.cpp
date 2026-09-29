@@ -48,11 +48,14 @@ Config loadConfig() {
     };
     c.love = get(L"love");
     c.balatroSteam = get(L"balatro_steam");
-    c.balatroPortmaster = get(L"balatro_portmaster");
     c.retroarch = get(L"retroarch");
     c.doomCore = get(L"doom_core");
     c.doomWad = get(L"doom_wad");
     c.roms = get(L"roms");
+    // Older arcade.ini files have no duck_hunt_ keys: default next to RetroArch and the ROMs.
+    std::wstring retroDir = c.retroarch.substr(0, c.retroarch.find_last_of(L"\\/"));
+    c.duckHuntCore = get(L"duck_hunt_core", (retroDir + L"\\cores\\nestopia_libretro.dll").c_str());
+    c.duckHuntRom = get(L"duck_hunt_rom", (c.roms + L"\\nes\\Duck Hunt (World).nes").c_str());
     c.mpv = get(L"mpv");
     std::wstring movies = get(L"movies"), part;
     for (size_t i = 0; i <= movies.size(); i++) {
