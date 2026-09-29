@@ -64,7 +64,7 @@ struct Screen {
 class Host {
 public:
     Host(arcade::Shared* shared, bool standalone)
-        : shared_(shared), standalone_(standalone), config_(loadConfig()), session_(config_) {
+        : shared_(shared), standalone_(standalone), config_(loadConfig()), session_(config_), lightGun_(config_) {
         readPos_ = shared_->touchWrite;
         apps_ = listApps(config_);
         loadSettings();
@@ -89,7 +89,7 @@ public:
             runPending();
             session_.poll();
             if ((mode_ == Mode::Running || mode_ == Mode::Menu) && !session_.alive()) appClosed();
-            if (mode_ == Mode::Running && !session_.hasWindow() && session_.age() > 30000) {
+            if (mode_ == Mode::Running && session_.windowless() > 30000) {
                 message_ = L"It did not open a window in 30 s (see host.log).";
                 session_.kill();
                 appClosed();
@@ -165,6 +165,7 @@ private:
     }
     void appClosed() {
         finishPlex();
+        lightGun_.appClosed();
         if (message_.empty()) message_ = current_.title + L" closed.";
         if (isVideo(session_.id()) && !screens_.empty()) { mode_ = Mode::Browse; resetInput(); }
         else toLauncher();
@@ -342,9 +343,16 @@ private:
     }
     void dockTapped() { requestDock(!docked()); }
 
-    // A bullet hit the docked poster: a short tap exactly where it landed (a click in
+    // A bullet hit the docked poster. On RetroArch's picture it is a light-gun shot at that
+    // spot (lightgun.cpp); anywhere else a short tap exactly where it landed (a click in
     // Balatro, a button on the launcher, menus, player and on-screen RetroPad).
     void onShot(int x, int y) {
+        float u, v;
+        if (lightGun_.enabled() && mode_ == Mode::Running && isRetro(session_.id()) && session_.hasWindow() &&
+            !settingsMode() && fit_.contains(x, y) && toApp(x, y, u, v)) {
+            lightGun_.shoot(session_.window(), u, v);
+            return;
+        }
         if (shotUpAt_) onTouch({SHOT_TOUCH, false, shotX_, shotY_});
         shotX_ = x; shotY_ = y;
         onTouch({SHOT_TOUCH, true, x, y});
@@ -783,6 +791,7 @@ private:
     bool standalone_;
     Config config_;
     Session session_;
+    LightGun lightGun_;
     Canvas canvas_;
     Plex plex_;
     std::vector<AppInfo> apps_;

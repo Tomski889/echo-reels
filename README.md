@@ -32,8 +32,26 @@ Tap **≡** (Balatro) or **HOME** (RetroArch) for Resume / Quit to launcher / Do
 **DOCK TO POSTER** (top right of the launcher, and in the ≡ / HOME menu) puts the arcade on the big lobby poster nearest you. The tablet keeps showing it too, and **UNDOCK POSTER** gives the poster its own picture back (a server poster comes back as well). Dock works on the 31 dynamic posters of the social and combat lobbies: the curved ring over the hub, the standing posters and the big combat-lobby ones. The sideways news board is left out.
 
 - **It's a touch screen.** Poke the poster with a fingertip: tap, hold and slide work as on the tablet (cards drag in Balatro, the on-screen RetroPad works).
-- **Light gun.** Where your own bullets meet the docked poster, it's a tap at that exact spot: shoot the tiles, the menus, Balatro's cards, the player controls or the RetroPad's buttons. Only your shots count, not other players'. (RetroArch games that need a real light gun, e.g. Duck Hunt, can't take aimed shots yet: RetroArch reads light-gun aim only from the mouse or touch of its own focused window.)
+- **Light gun.** Where your own bullets meet the docked poster, it's a tap at that exact spot: shoot the tiles, the menus, Balatro's cards, the player controls or the RetroPad's buttons. Only your shots count, not other players'. On a RetroArch game's picture a shot is a real **light-gun** shot, aimed where it hit (see below).
 - Only you see it: the picture is streamed into your game locally, like the tablet.
+
+### Light-gun games (RetroArch)
+
+Duck Hunt style games work with the in-game guns: dock the arcade, start the game, and shoot the docked poster. Each bullet that lands on the game's picture aims the game's light gun at that spot and pulls the trigger (shots on the side panels still press the RetroPad buttons). Tested with *Metal Combat* (SNES Super Scope, Snes9x): aim calibration, crosshair and shots all land where the bullets hit.
+
+- It goes through RetroArch's standard light gun, on any port, so it should work with every core that uses it: NES Zapper (Nestopia), SNES Super Scope / Justifier (Snes9x), Menacer / Light Phaser (Genesis Plus GX), GunCon / Justifier (PCSX ReARMed) and others. Only Snes9x has been tried so far.
+- The game needs a light gun plugged in. If a game ignores the shots, open RetroArch's **MENU** > *Controls* > *Port 1 (or 2) Controls* > *Device Type*, pick the gun (Zapper, Super Scope, GunCon...) and *Save Game Remap File*. The Super Scope, for example, is Port 2 in Snes9x.
+- Leave a core's own gun option on *Lightgun* (the usual default), not *Touchscreen*/*Pointer*/*Mouse*.
+
+**How:** RetroArch aims its light gun at a touch on its window, focused or not, and an invisible overlay (`lightgun_overlay.cfg`, RetroArch's overlay light gun) makes the touch pull the trigger, for every core and port. So the host injects a 0.1 s touch at the spot. The window is marked *no-activate*, so the touch never takes focus from Echo VR. A touch goes to whichever window is on top at that point, so while you shoot, RetroArch's window is brought on screen and kept on top (without focus); 3 s after your last shot it goes back behind your windows (or off screen).
+
+`light_gun=` in `arcade.ini`:
+
+| Value | What a shot does |
+| --- | --- |
+| `touch` (default) | The touch above. Echo VR keeps focus. |
+| `focus` | Fallback: gives RetroArch focus, puts the Windows cursor on the spot and clicks. Focus and the cursor go back 2 s after your last shot (or when the game closes). |
+| `off` | Nothing on the game's picture (no overlay either). |
 
 **Sound** from the apps goes to the VR headset (Link / Air Link "Oculus Virtual Audio Device"), not the Windows default: each app gets its own output device, the same per-app setting as Windows' volume mixer. Change it with `audio_device=` in `arcade.ini` (`default` = Windows default).
 
@@ -53,7 +71,8 @@ echovr.exe
         • draws the launcher and touch controls
         • captures the game window (Windows.Graphics.Capture) → shared memory
         • touches → Balatro (Lua bridge over UDP 127.0.0.1)
-                  → RetroArch (network RetroPad + command port, 127.0.0.1)
+                  → RetroArch (network RetroPad + command port, 127.0.0.1;
+                               light gun: injected touch on its window)
                   → mpv (JSON IPC pipe), Plex (plex.tv link + your server)
 ```
 
@@ -120,11 +139,12 @@ dist\EchoArcade\ArcadeHost.exe --standalone
 - **Balatro only reacts to some taps:** on a profile that hasn't finished Balatro's tutorial, Jimbo's tutorial blocks everything except its own prompts. Tap **Skip >** (top right) or his speech bubble.
 - **DOCK says "No lobby poster here"**: dock works in the social and combat lobbies, not in matches. **"Could not find your hands"**: touch the tablet once (that starts the fingertip tracking) and press DOCK again.
 - **Docked, but the poster keeps its picture or touches/shots miss:** `runtime.log` has `posters:` and `light gun:` lines (where you were, which poster, where each shot went). Send those.
+- **Light-gun shots don't register:** `host.log` has `light gun:` lines (where each shot went on the desktop, and whether another window was on top of RetroArch there). Check the game has a gun plugged in (above), or try `light_gun=focus`.
 - **App windows** sit behind your other windows at the top-left of the desktop. Set `window_mode=offscreen` in `plugins\EchoArcade\arcade.ini` to move them off-screen.
 
 ## Status
 
-On the desktop, every tile has been driven end to end through the real host, capture and input paths using `fake_game.py`: launching, touch input, pause menu and clean quit for all four tiles, and DOCK, poster touches and shots through the host. The in-game DOCK (poster texture override, fingertip and bullet hit-testing) is built from the game's code and data but hasn't been tried in a lobby yet. Report `runtime.log` with any issue.
+On the desktop, every tile has been driven end to end through the real host, capture and input paths using `fake_game.py`: launching, touch input, pause menu and clean quit for all four tiles, and DOCK, poster touches and shots through the host. The RetroArch light gun (both modes, desktop and off-screen windows) was driven the same way with *Metal Combat* while another window kept focus. The in-game DOCK (poster texture override, fingertip and bullet hit-testing) is built from the game's code and data but hasn't been tried in a lobby yet. Report `runtime.log` with any issue.
 
 ## Credits
 
