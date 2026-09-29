@@ -152,6 +152,7 @@ private:
         pointerDown_ = false;
         pressed_ = -1;
         shotUpAt_ = 0;
+        std::fill(std::begin(padHeld_), std::end(padHeld_), false);
     }
     void push(Screen s) {
         screens_.push_back(std::move(s));
@@ -166,6 +167,7 @@ private:
     void appClosed() {
         finishPlex();
         lightGun_.appClosed();
+        gunUsed_ = false;
         if (message_.empty()) message_ = current_.title + L" closed.";
         if (isVideo(session_.id()) && !screens_.empty()) { mode_ = Mode::Browse; resetInput(); }
         else toLauncher();
@@ -179,6 +181,7 @@ private:
         if (app.id == AppId::Movies) { openMovies(); return; }
         if (app.id == AppId::Plex) { openPlex(); return; }
         if (!session_.launch(app.id)) { message_ = L"Could not start " + app.title + L" (see host.log)."; return; }
+        gunUsed_ = false;
         mode_ = Mode::Running;
         resetInput();
     }
@@ -351,6 +354,7 @@ private:
         if (lightGun_.enabled() && mode_ == Mode::Running && isRetro(session_.id()) && session_.hasWindow() &&
             !settingsMode() && fit_.contains(x, y) && toApp(x, y, u, v)) {
             lightGun_.shoot(session_.window(), u, v);
+            gunUsed_ = true;
             return;
         }
         if (shotUpAt_) onTouch({SHOT_TOUCH, false, shotX_, shotY_});
@@ -553,6 +557,8 @@ private:
             bool on = false;
             for (auto& [cell, h] : held_) on |= grow(b.rect, 6).contains(h.x, h.y);
             session_.pad(b.pad, on);
+            if (on && !padHeld_[b.pad]) gunButton(b.pad);
+            padHeld_[b.pad] = on;
         }
         if (stickMode_) {
             // Newest finger in the stick area sets the direction; release recentres.
@@ -568,6 +574,16 @@ private:
             stick_[0] = x; stick_[1] = y;
             session_.analog(x, y);
         }
+    }
+
+    // Once you have shot at the game, the pad's A/B/X/START/SELECT also press the light gun's
+    // own buttons (GunCon A/B, Justifier special...), which the RetroPad can't reach: the gun
+    // replaces the pad on its port.
+    void gunButton(Pad pad) {
+        if (!gunUsed_ || !session_.hasWindow()) return;
+        GunButton b = pad == PadA ? GunAuxA : pad == PadB ? GunAuxB : pad == PadX ? GunAuxC :
+                      pad == PadStart ? GunStart : pad == PadSelect ? GunSelect : GunButtonCount;
+        if (b != GunButtonCount) lightGun_.press(session_.window(), b);
     }
 
     bool toApp(int x, int y, float& u, float& v) {
@@ -802,7 +818,7 @@ private:
     std::map<int, Touch> held_;
     std::vector<Touch> gameCells_;
     int pressed_ = -1;
-    bool pointerDown_ = false, stickMode_ = false;
+    bool pointerDown_ = false, stickMode_ = false, gunUsed_ = false, padHeld_[PadCount] = {};
     float lastU_ = 0, lastV_ = 0, stick_[2] = {};
     std::wstring message_, loading_, playing_, linkCode_;
     std::string linkPin_;

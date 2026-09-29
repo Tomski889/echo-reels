@@ -15,7 +15,6 @@
 
 namespace {
 
-constexpr DWORD HOLD_MS = 100;          // trigger held this long (a few frames)
 constexpr DWORD GAP_MS = 50;            // released this long before the next shot
 constexpr DWORD FOCUS_SETTLE_MS = 80;   // RetroArch re-acquires the mouse a few frames after focus
 constexpr uint64_t PARK_AFTER_MS = 3000, FOCUS_BACK_MS = 2000;
@@ -60,11 +59,11 @@ LightGun::~LightGun() {
     if (worker_.joinable()) worker_.join();
 }
 
-void LightGun::shoot(HWND window, float u, float v) {
+void LightGun::shoot(HWND window, float u, float v, DWORD holdMs) {
     if (!enabled_) return;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (queue_.size() < 4) queue_.push_back({window, u, v});
+        if (queue_.size() < 4) queue_.push_back({window, u, v, holdMs});
     }
     wake_.notify_all();
 }
@@ -158,12 +157,12 @@ void LightGun::fire(const Shot& shot) {
         GetWindowTextW(top, title, 128);
         hostLog("light gun: another window is on top of RetroArch at %ld,%ld (%p \"%ls\")", at.x, at.y, static_cast<void*>(top), title);
     }
-    bool ok = focusMode_ ? click(window, at) : touch(at);
+    bool ok = focusMode_ ? click(window, at, shot.hold) : touch(at, shot.hold);
     lastShot_ = GetTickCount64();
     if (shots_++ < 20) hostLog("light gun: shot at %.3f,%.3f -> screen %ld,%ld (%s)", shot.u, shot.v, at.x, at.y, ok ? "ok" : "failed");
 }
 
-bool LightGun::touch(POINT at) {
+bool LightGun::touch(POINT at, DWORD hold) {
     if (!touchReady_) {
         touchReady_ = InitializeTouchInjection(1, TOUCH_FEEDBACK_NONE) != FALSE;
         if (!touchReady_) {
@@ -182,7 +181,7 @@ bool LightGun::touch(POINT at) {
         return false;
     }
     // A contact that is not updated gets cancelled, so keep it alive while the trigger is held.
-    for (DWORD held = 0; held < HOLD_MS; held += 16) {
+    for (DWORD held = 0; held < hold; held += 16) {
         Sleep(16);
         t.pointerInfo.pointerFlags = POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
         InjectTouchInput(1, &t);
@@ -193,7 +192,7 @@ bool LightGun::touch(POINT at) {
     return ok;
 }
 
-bool LightGun::click(HWND window, POINT at) {
+bool LightGun::click(HWND window, POINT at, DWORD hold) {
     HWND current = GetForegroundWindow();
     if (current != window) {
         if (!focused_) {
@@ -212,7 +211,7 @@ bool LightGun::click(HWND window, POINT at) {
         Sleep(20);  // a frame to take the new aim
     }
     mouseButton(MOUSEEVENTF_LEFTDOWN);
-    Sleep(HOLD_MS);
+    Sleep(hold);
     mouseButton(MOUSEEVENTF_LEFTUP);
     Sleep(GAP_MS);
     return true;

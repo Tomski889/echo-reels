@@ -61,6 +61,12 @@ private:
     WindowCapture capture_;
 };
 
+// The light gun's own buttons (GunCon A/B, Justifier special, Super Scope pause...): invisible
+// overlay buttons in a row along the bottom-left edge of RetroArch's window, pressed by a tap.
+enum GunButton { GunAuxA, GunAuxB, GunAuxC, GunStart, GunSelect, GunButtonCount };
+inline float gunButtonX(int b) { return .0125f + .025f * b; }  // centre, 0..1 across the window
+constexpr float GUN_BUTTON_Y = .985f, GUN_BUTTON_RANGE = .012f;
+
 // Light gun for RetroArch (lightgun.cpp): a shot on the docked poster becomes an aimed trigger
 // pull at the same spot of RetroArch's picture. arcade.ini light_gun= touch (default), focus, off.
 class LightGun {
@@ -68,15 +74,17 @@ public:
     explicit LightGun(const Config& config);
     ~LightGun();
     bool enabled() const { return enabled_; }
-    void shoot(HWND window, float u, float v);  // u, v: 0..1 across the window; runs on a worker thread
+    void shoot(HWND window, float u, float v, DWORD holdMs = 100);  // u, v: 0..1 across the window; runs on a worker thread
+    // Buttons are held longer than the trigger: some games (Time Crisis) miss a 0.1 s press.
+    void press(HWND window, GunButton button) { shoot(window, gunButtonX(button), GUN_BUTTON_Y, 300); }
     void appClosed();                           // park the window and give focus back now
 
 private:
-    struct Shot { HWND window; float u, v; };
+    struct Shot { HWND window; float u, v; DWORD hold; };
     void run();
     void fire(const Shot& shot);
-    bool touch(POINT at);
-    bool click(HWND window, POINT at);
+    bool touch(POINT at, DWORD hold);
+    bool click(HWND window, POINT at, DWORD hold);
     void raise(HWND window);
     void park();
     void giveFocusBack();
