@@ -12,10 +12,13 @@ int main() {
     // tools/fake_game.py mirrors these offsets.
     static_assert(offsetof(arcade::Shared, hostPid) == 32 && offsetof(arcade::Shared, latestFrame) == 36);
     static_assert(offsetof(arcade::Shared, frameSerial) == 40 && offsetof(arcade::Shared, hostHeartbeat) == 48);
-    static_assert(offsetof(arcade::Shared, gamePid) == 152 && offsetof(arcade::Shared, pageVisible) == 156);
-    static_assert(offsetof(arcade::Shared, readingFrame) == 160 && offsetof(arcade::Shared, gameHeartbeat) == 168);
-    static_assert(offsetof(arcade::Shared, tabletScale) == 44 && offsetof(arcade::Shared, pageMode) == 164);
-    static_assert(offsetof(arcade::Shared, touchWrite) == 176 && offsetof(arcade::Shared, touches) == 192);
+    static_assert(offsetof(arcade::Shared, dockWant) == 152 && offsetof(arcade::Shared, dockSerial) == 156);
+    static_assert(offsetof(arcade::Shared, gamePid) == 160 && offsetof(arcade::Shared, pageVisible) == 164);
+    static_assert(offsetof(arcade::Shared, readingFrame) == 168 && offsetof(arcade::Shared, gameHeartbeat) == 176);
+    static_assert(offsetof(arcade::Shared, tabletScale) == 44 && offsetof(arcade::Shared, pageMode) == 172);
+    static_assert(offsetof(arcade::Shared, touchWrite) == 184 && offsetof(arcade::Shared, dockDone) == 188);
+    static_assert(offsetof(arcade::Shared, dockState) == 192 && offsetof(arcade::Shared, shots) == 196);
+    static_assert(offsetof(arcade::Shared, dockText) == 200 && offsetof(arcade::Shared, touches) == 296);
     static_assert(offsetof(arcade::Shared, frames) == 8192 && sizeof(arcade::Shared) == 8192 + 3 * 2351104);
     HANDLE mapping = nullptr;
     auto s = arcade::open(&mapping);
@@ -69,6 +72,13 @@ int main() {
     auto& b = s->touches[uint32_t(start + 1) % arcade::TOUCH_RING];
     CHECK(a.seq == uint32_t(start) + 1 && a.cell == 5 && a.kind == arcade::TouchDown);
     CHECK(b.seq == uint32_t(start) + 2 && b.kind == arcade::TouchUp);
+    // Poster pointer and shot events carry an exact pixel.
+    arcade::pushTouch(s, 1, arcade::PointMove, 1023, 573);
+    arcade::pushTouch(s, arcade::SHOT_POINTER, arcade::Shot, 17, 300);
+    auto& c = s->touches[uint32_t(start + 2) % arcade::TOUCH_RING];
+    auto& d = s->touches[uint32_t(start + 3) % arcade::TOUCH_RING];
+    CHECK(c.cell == 1 && c.kind == arcade::PointMove && (c.xy & 0xffff) == 1023 && (c.xy >> 16) == 573);
+    CHECK(d.cell == arcade::SHOT_POINTER && d.kind == arcade::Shot && (d.xy & 0xffff) == 17 && (d.xy >> 16) == 300);
     std::printf(failures ? "ipc_test: %d failure(s)\n" : "ipc_test: all checks passed (%d consistent frame copies)\n", failures ? failures : copies);
     return failures ? 1 : 0;
 }

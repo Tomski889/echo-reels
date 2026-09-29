@@ -68,7 +68,7 @@ A large screen in the lobby space that everyone nearby sees, for co-op games, mo
 1. Relay plus lobby rooms, with **Chess** and **Battleships**.
 2. **RetroArch Netplay** invites from the tablet.
 3. **Watch-party sync** for Movies/Plex (still on the tablet).
-4. **Big lobby screen**: swap an existing world texture first, then add co-op with shared controls.
+4. **Big lobby screen**: the texture swap exists (DOCK, local only); next is showing it to everyone nearby, then co-op with shared controls.
 
 ## Tablet upgrades
 
@@ -77,4 +77,4 @@ A large screen in the lobby space that everyone nearby sees, for co-op games, mo
 - **Favourites / recently played** row on the launcher.
 - **Save states from the pause menu:** quick save/load through RetroArch's command port.
 - **Controller passthrough:** Touch controller thumbstick and buttons as the gamepad while the tablet is open. Harder, because it hooks Echo's input.
-- **Big screen mode:** detach the view onto a large floating lobby screen. Much harder, because it needs Echo's world rendering, not the tablet UI.
+- ~~**Big screen mode**~~: done as **DOCK** (the arcade on the nearest lobby poster, touch + light gun). Next: aimed light-gun shots inside RetroArch games (needs RetroArch focused and the Windows cursor, see README).

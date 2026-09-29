@@ -1,0 +1,565 @@
+// Lobby-poster screen: DOCK, poster touch and the light gun (see posters.h).
+//
+// Engine facts (echovr.exe 1683152886), all checked by signature at startup:
+//   CR15NetDynamicPosterCS (component key sym("R15NetDynamicPoster"))
+//     +0x80 gamespace, +0xfc u16 poster count, +0x100 posters (0x58 each), +0x108 keys (16 each,
+//     first qword = the poster actor's handle; its low 16 bits index the gamespace's actor
+//     name tables, gamespace +0x370 -> +0xb8, else +0x80, as the engine's own messages do).
+//     Poster: +0x04 u32 art slice, +0x08 texture it shows (-1 = the level's fallback art),
+//     +0x10 texture it replaces on the model, +0x18 handle for +0x08, +0x48 server poster key.
+//     0x140d0f900 per-frame update: resolves +0x48 to +0x08, and re-applies +0x08 when it
+//     changes (fallback art every frame while it is -1).
+//     0x140d20410 OverrideTexture(cs, key, poster, slice): loads +0x08 into +0x18 and puts it
+//     on the poster model. 0x140ca3740 destructor.
+//   Touch buttons (CR15ButtonInteractCS): after its update, +0x1f0 / +0x200 hold the two
+//     fingertips in world space as (x, y, z, 1).
+//   CR15NetBulletCS 0x140ce2020 Fire(cs, bullet, info, speed, muzzle, dir, fromNetwork, flag):
+//     bullet = +0xf8 + 0x298 * u16 at (+0xc8 + 4 * handle); its +0xf8 position and +0x104
+//     direction are set by Fire.
+//   Gamespace +0xd0 rotation (x, y, z, w), +0xe0 position, +0xec scale: its place in the world.
+#include "posters.h"
+#include "d3d12_stream.h"
+#include "log.h"
+#include "../generated/arcade_tab.h"
+#include "../generated/posters.h"
+#include "../vendor/minhook/include/MinHook.h"
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cstring>
+#include <map>
+#include <mutex>
+#include <set>
+#include <unordered_map>
+#include <vector>
+
+namespace posters {
+namespace {
+
+using U = uint64_t;
+using P = unsigned char*;
+template <class T> T& at(void* p, size_t n) { return *reinterpret_cast<T*>(static_cast<P>(p) + n); }
+constexpr U NONE = ~U(0);
+
+constexpr unsigned RVA_UPDATE = 0xd0f900, RVA_DESTROY = 0xca3740, RVA_OVERRIDE = 0xd20410, RVA_FIRE = 0xce2020;
+struct Signature { unsigned rva; unsigned char bytes[16]; };
+constexpr Signature SIGNATURES[] = {
+    {RVA_UPDATE, {0x4c,0x8b,0xdc,0x56,0x48,0x83,0xec,0x60,0x48,0x8b,0x81,0xb8,0x00,0x00,0x00,0x48}},
+    {RVA_DESTROY, {0x48,0x89,0x4c,0x24,0x08,0x53,0x56,0x57,0x48,0x83,0xec,0x20,0x8b,0xf2,0x48,0x8b}},
+    {RVA_OVERRIDE, {0x48,0x89,0x5c,0x24,0x18,0x55,0x56,0x57,0x48,0x83,0xec,0x40,0x48,0x8b,0x81,0xb8}},
+    {RVA_FIRE, {0x48,0x89,0x5c,0x24,0x10,0x55,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57}},
+};
+constexpr unsigned POSTER_STRIDE = 0x58, BULLET_STRIDE = 0x298;
+
+using Update = void (*)(void*);
+using Destroy = void* (*)(void*, unsigned);
+using Override = int (*)(void*, void*, void*, U);
+using Fire = U (*)(void*, unsigned, void*, float, void*, void*, int, int);
+Update updateOriginal;
+Destroy destroyOriginal;
+Override overrideTexture;
+Fire fireOriginal;
+
+arcade::Shared* shared = nullptr;
+std::atomic<bool> fault{false};
+std::mutex mutex;
+
+// ---- geometry ----
+struct Vec { float x = 0, y = 0, z = 0; };
+Vec operator+(Vec a, Vec b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+Vec operator-(Vec a, Vec b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+Vec operator*(Vec a, float k) { return {a.x * k, a.y * k, a.z * k}; }
+float dot(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+Vec cross(Vec a, Vec b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+float length(Vec a) { return std::sqrt(dot(a, a)); }
+bool finite(Vec a) { return std::isfinite(a.x) && std::isfinite(a.y) && std::isfinite(a.z) && std::fabs(a.x) + std::fabs(a.y) + std::fabs(a.z) < 1e5f; }
+
+// A placement: world = position + rotate(rotation, scale * local). Posters scale uniformly.
+struct Xform {
+    float q[4] = {0, 0, 0, 1};
+    Vec t;
+    float s = 1;
+    Vec rotate(Vec v, bool inverse = false) const {
+        Vec u{inverse ? -q[0] : q[0], inverse ? -q[1] : q[1], inverse ? -q[2] : q[2]};
+        Vec c = cross(u, v) + v * q[3];
+        return v + cross(u, c) * 2.f;
+    }
+    Vec apply(Vec v) const { return t + rotate(v * s); }
+    Vec unapply(Vec w) const { return rotate(w - t, true) * (1.f / s); }
+};
+
+Xform gamespaceXform(void* gs) {
+    Xform x;
+    memcpy(x.q, static_cast<P>(gs) + 0xd0, 16);
+    memcpy(&x.t, static_cast<P>(gs) + 0xe0, 12);
+    x.s = at<float>(gs, 0xec);
+    float n = x.q[0] * x.q[0] + x.q[1] * x.q[1] + x.q[2] * x.q[2] + x.q[3] * x.q[3];
+    if (!(std::fabs(n - 1) < .01f) || !finite(x.t) || !(x.s > .01f && x.s < 100)) {
+        static int logged = 0;
+        if (logged++ < 3) logf("posters: gamespace %p has no usable placement; using the level's own space", gs);
+        return Xform{};
+    }
+    return x;
+}
+
+struct Tri { Vec a, b, c, n; float uv[3][2]; };
+struct Mesh { std::vector<Tri> tris; Vec center; };
+std::vector<Mesh> meshes;
+std::unordered_map<U, unsigned> table;  // poster actor -> POSTERS index
+
+// Closest point on a triangle (Ericson, Real-Time Collision Detection 5.1.5), as barycentric weights.
+void closest(const Tri& t, Vec p, float& wa, float& wb, float& wc) {
+    Vec ab = t.b - t.a, ac = t.c - t.a, ap = p - t.a;
+    float d1 = dot(ab, ap), d2 = dot(ac, ap);
+    if (d1 <= 0 && d2 <= 0) { wa = 1; wb = wc = 0; return; }
+    Vec bp = p - t.b;
+    float d3 = dot(ab, bp), d4 = dot(ac, bp);
+    if (d3 >= 0 && d4 <= d3) { wb = 1; wa = wc = 0; return; }
+    float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0) { float v = d1 / (d1 - d3); wa = 1 - v; wb = v; wc = 0; return; }
+    Vec cp = p - t.c;
+    float d5 = dot(ab, cp), d6 = dot(ac, cp);
+    if (d6 >= 0 && d5 <= d6) { wc = 1; wa = wb = 0; return; }
+    float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0) { float w = d2 / (d2 - d6); wa = 1 - w; wc = w; wb = 0; return; }
+    float va = d3 * d6 - d5 * d4;
+    if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) { float w = (d4 - d3) / ((d4 - d3) + (d5 - d6)); wb = 1 - w; wc = w; wa = 0; return; }
+    float denom = 1.f / (va + vb + vc);
+    wb = vb * denom; wc = vc * denom; wa = 1 - wb - wc;
+}
+
+// Mesh UV -> host screen pixel (the shader doubles v; see arcade_layout.py).
+bool toPixel(float u, float v, int& x, int& y) {
+    float fx = u * POSTER_TEX_W - POSTER_X0, fy = 2 * v * POSTER_TEX_H - POSTER_Y0;
+    if (!(fx >= 0 && fy >= 0 && fx < POSTER_FRAME_W && fy < POSTER_FRAME_H)) return false;
+    x = int(fx); y = int(fy);
+    return true;
+}
+void interpolate(const Tri& t, float wa, float wb, float wc, float& u, float& v) {
+    u = t.uv[0][0] * wa + t.uv[1][0] * wb + t.uv[2][0] * wc;
+    v = t.uv[0][1] * wa + t.uv[1][1] * wb + t.uv[2][1] * wc;
+}
+
+// ---- dock state ----
+struct Dock {
+    bool active = false;
+    void* cs = nullptr;
+    void* gs = nullptr;
+    unsigned index = 0;
+    U actor = 0, handle = 0, savedName = NONE, savedKey = NONE;
+    unsigned mesh = 0;
+    Xform level, space;  // poster in its level, level in the world
+    U lastSeen = 0;
+} dock;
+LONG handled = 0;               // last dockSerial answered
+U lastPosterUpdate = 0;         // any poster system ran (the level has posters)
+std::set<void*> seenSystems;
+
+// Which POSTERS entry a poster-system key is (by the actor's level name), or -1.
+int posterOf(void* gs, U handle) {
+    auto it = table.find(handle);  // in case the key is the name itself
+    if (it != table.end()) return int(it->second);
+    P names = at<P>(gs, 0x370);
+    if (!names) return -1;
+    size_t index = size_t(handle & 0xffff);
+    for (size_t list : {size_t(0xb8), size_t(0x80)}) {
+        P a = at<P>(names, list);
+        if (!a) continue;
+        it = table.find(at<U>(a, index * 8));
+        if (it != table.end()) return int(it->second);
+    }
+    return -1;
+}
+
+void answer(LONG state, const char* fmt, ...) {
+    char text[sizeof(shared->dockText)];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(text, sizeof(text), fmt, args);
+    va_end(args);
+    memcpy(shared->dockText, text, sizeof(text));
+    shared->dockState = state;
+    MemoryBarrier();
+    shared->dockDone = handled;
+    logf("posters: %s", text);
+}
+
+// ---- fingertips (from the touch-button systems) ----
+struct Hands { Vec tip[2]; bool valid[2] = {}; void* gs = nullptr; U tick = 0; };
+std::map<void*, Hands> hands;   // by button system
+void* touchSource = nullptr;    // the button system whose fingertips drive the docked poster
+struct Finger { bool down = false; int x = 0, y = 0; };
+Finger fingers[2];
+
+bool playerPosition(void* gs, U now, Vec& out) {
+    const Hands* best = nullptr;
+    for (auto& [cs, h] : hands) {
+        if (now - h.tick > 1500 || !(h.valid[0] || h.valid[1])) continue;
+        if (!best || (h.gs == gs && best->gs != gs)) best = &h;
+    }
+    if (!best) return false;
+    out = best->valid[0] && best->valid[1] ? (best->tip[0] + best->tip[1]) * .5f : best->tip[best->valid[0] ? 0 : 1];
+    return true;
+}
+
+void releaseFingers() {
+    for (unsigned i = 0; i < 2; i++)
+        if (fingers[i].down) { arcade::pushTouch(shared, i, arcade::PointUp, fingers[i].x, fingers[i].y); fingers[i].down = false; }
+}
+
+void undock(const char* why, LONG reportState = arcade::Undocked) {
+    if (!dock.active) return;
+    stream::setPosterActive(false);  // no copies into the texture from here on
+    releaseFingers();
+    void* cs = dock.cs;
+    unsigned index = dock.index;
+    P item = at<P>(cs, 0x100) + size_t(index) * POSTER_STRIDE;
+    bool same = index < at<unsigned short>(cs, 0xfc) && at<U>(at<P>(cs, 0x108), size_t(index) * 16) == dock.handle;
+    if (same) {
+        at<U>(item, 0x48) = dock.savedKey;
+        at<U>(item, 0x08) = dock.savedName;
+        if (dock.savedName != NONE) {
+            U key[2] = {at<U>(at<P>(cs, 0x108), size_t(index) * 16), at<U>(at<P>(cs, 0x108), size_t(index) * 16 + 8)};
+            int r = overrideTexture(cs, key, item, at<unsigned>(item, 4));
+            if (r != 0) { at<U>(item, 0x08) = NONE; logf("posters: restoring the server poster failed (%d); showing the level's art", r); }
+        }
+        // savedName == NONE: the poster system puts the level's own art back next frame.
+    }
+    dock = Dock{};
+    touchSource = nullptr;
+    answer(reportState, "%s", why);
+}
+
+// Poster system `cs` is inside its own update: safe to use it and its model system.
+void handleRequest(void* cs, U now) {
+    LONG serial = shared->dockSerial;
+    if (serial == handled) return;
+    if (dock.active && dock.cs != cs) return;  // the docked poster's own system answers
+    handled = serial;
+    if (!shared->dockWant) {
+        if (dock.active) undock("Undocked: the poster shows its own picture again.");
+        else answer(arcade::Undocked, "Not docked.");
+        return;
+    }
+    void* gs = at<void*>(cs, 0x80);
+    Vec player;
+    if (!playerPosition(gs, now, player)) {
+        answer(arcade::DockFailed, "Could not find your hands - touch the tablet, then press DOCK again.");
+        return;
+    }
+    Xform space = gamespaceXform(gs);
+    unsigned count = at<unsigned short>(cs, 0xfc);
+    P keys = at<P>(cs, 0x108);
+    int best = -1;
+    float bestDistance = 1e9f;
+    for (unsigned i = 0; i < count && keys; i++) {
+        int which = posterOf(gs, at<U>(keys, size_t(i) * 16));
+        if (which < 0) continue;
+        const PosterInfo& info = POSTERS[which];
+        Xform level{{info.rot[0], info.rot[1], info.rot[2], info.rot[3]}, {info.pos[0], info.pos[1], info.pos[2]}, info.scale[0]};
+        float d = length(space.apply(level.apply(meshes[info.mesh].center)) - player);
+        if (d < bestDistance) { bestDistance = d; best = int(i); }
+    }
+    if (best < 0) { answer(arcade::DockFailed, "No poster here can show the arcade."); return; }
+    if (dock.active) undock("Moving to the nearest poster.");
+    handled = serial;  // undock() answered with the same serial; the final answer follows
+    const PosterInfo& info = POSTERS[posterOf(gs, at<U>(keys, size_t(best) * 16))];
+    P item = at<P>(cs, 0x100) + size_t(best) * POSTER_STRIDE;
+    Dock d;
+    d.cs = cs; d.gs = gs; d.index = unsigned(best); d.actor = info.actor; d.handle = at<U>(keys, size_t(best) * 16); d.mesh = info.mesh;
+    d.level = Xform{{info.rot[0], info.rot[1], info.rot[2], info.rot[3]}, {info.pos[0], info.pos[1], info.pos[2]}, info.scale[0]};
+    d.space = space;
+    d.savedName = at<U>(item, 0x08);
+    d.savedKey = at<U>(item, 0x48);
+    at<U>(item, 0x48) = NONE;  // stop the server's poster from being resolved back in
+    at<U>(item, 0x08) = ARCADE_POSTER_TEXTURE;
+    U key[2] = {at<U>(keys, size_t(best) * 16), at<U>(keys, size_t(best) * 16 + 8)};
+    int r = overrideTexture(cs, key, item, NONE);
+    if (r != 0) {
+        at<U>(item, 0x48) = d.savedKey;
+        at<U>(item, 0x08) = NONE;  // the level's art comes back next frame; a server poster when it resolves again
+        answer(arcade::DockFailed, "The poster refused the arcade screen (error %d, see runtime.log).", r);
+        return;
+    }
+    d.active = true;
+    d.lastSeen = now;
+    dock = d;
+    Vec center = d.space.apply(d.level.apply(meshes[d.mesh].center));
+    logf("posters: docked on %016llx (slot %u, was %016llx/%016llx) at %.2f %.2f %.2f; you at %.2f %.2f %.2f; texture %s",
+         info.actor, best, d.savedName, d.savedKey, center.x, center.y, center.z, player.x, player.y, player.z,
+         stream::posterTextureReady() ? "ready" : "NOT CREATED YET");
+    stream::setPosterActive(true);
+    answer(arcade::Docked, "Docked on the nearest poster (%.1f m away). Touch it, or shoot it in combat.", bestDistance);
+}
+
+void afterUpdate(void* cs) {
+    U now = GetTickCount64();
+    lastPosterUpdate = now;
+    if (seenSystems.insert(cs).second) {
+        unsigned count = at<unsigned short>(cs, 0xfc), known = 0;
+        P keys = at<P>(cs, 0x108);
+        for (unsigned i = 0; i < count && keys; i++) known += posterOf(at<void*>(cs, 0x80), at<U>(keys, size_t(i) * 16)) >= 0 ? 1 : 0;
+        Xform space = gamespaceXform(at<void*>(cs, 0x80));
+        logf("posters: poster system %p (gamespace %p at %.2f %.2f %.2f x%.2f): %u posters, %u can dock",
+             cs, at<void*>(cs, 0x80), space.t.x, space.t.y, space.t.z, space.s, count, known);
+    }
+    if (dock.active && dock.cs == cs) {
+        dock.lastSeen = now;
+        unsigned index = dock.index;
+        if (index >= at<unsigned short>(cs, 0xfc) || at<U>(at<P>(cs, 0x108), size_t(index) * 16) != dock.handle) {
+            stream::setPosterActive(false);
+            releaseFingers();
+            dock = Dock{};
+            answer(arcade::Undocked, "The poster went away; undocked.");
+        } else {
+            P item = at<P>(cs, 0x100) + size_t(index) * POSTER_STRIDE;
+            // The server assigned new art to this poster while we are docked: remember it for
+            // undock and keep the arcade on.
+            if (at<U>(item, 0x48) != NONE) { dock.savedKey = at<U>(item, 0x48); at<U>(item, 0x48) = NONE; }
+            if (at<U>(item, 0x08) != ARCADE_POSTER_TEXTURE) {
+                logf("posters: the poster's art changed under the dock; putting the arcade back");
+                dock.savedName = at<U>(item, 0x08);
+                at<U>(item, 0x08) = ARCADE_POSTER_TEXTURE;
+                U key[2] = {at<U>(at<P>(cs, 0x108), size_t(index) * 16), at<U>(at<P>(cs, 0x108), size_t(index) * 16 + 8)};
+                stream::setPosterActive(false);
+                int r = overrideTexture(cs, key, item, NONE);
+                if (r == 0) stream::setPosterActive(true);
+                else { at<U>(item, 0x08) = dock.savedName; dock = Dock{}; answer(arcade::Undocked, "The server replaced the poster; undocked."); }
+            }
+        }
+    }
+    handleRequest(cs, now);
+}
+
+// ---- hooks ----
+void failPosters(const char* why) {
+    if (fault.exchange(true)) return;
+    logf("posters: FAULT: %s -- dock, poster touch and light gun disabled for this session", why);
+    stream::setPosterActive(false);
+}
+
+void safeAfterUpdate(void* cs) {
+    __try { afterUpdate(cs); } __except (EXCEPTION_EXECUTE_HANDLER) { failPosters("access fault in the poster update"); }
+}
+
+void update(void* cs) {
+    updateOriginal(cs);
+    if (fault) return;
+    std::lock_guard<std::mutex> lock(mutex);
+    safeAfterUpdate(cs);
+}
+
+void* destroy(void* cs, unsigned flags) {
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        seenSystems.erase(cs);
+        if (dock.active && dock.cs == cs) {
+            stream::setPosterActive(false);  // before the level frees anything
+            releaseFingers();
+            dock = Dock{};
+            answer(arcade::Undocked, "Left the lobby; undocked.");
+        }
+    }
+    return destroyOriginal(cs, flags);
+}
+
+// Where a fingertip touches the docked poster: pixel, or false when not touching.
+bool contact(Vec tip, bool wasDown, int& x, int& y) {
+    Vec local = dock.level.unapply(dock.space.unapply(tip));
+    float scale = dock.level.s * dock.space.s;
+    float best = 1e9f, bestSigned = 0, u = 0, v = 0;
+    for (auto& t : meshes[dock.mesh].tris) {
+        float wa, wb, wc;
+        closest(t, local, wa, wb, wc);
+        Vec p = t.a * wa + t.b * wb + t.c * wc;
+        float distance = length(local - p) * scale;
+        if (distance < best) {
+            best = distance;
+            bestSigned = dot(local - p, t.n) * scale;
+            interpolate(t, wa, wb, wc, u, v);
+        }
+    }
+    // Touching: within 1.5 cm in front (4 cm once down) and up to 8 cm through the surface.
+    float front = wasDown ? .04f : .015f;
+    if (!(bestSigned < front && bestSigned > -.08f && best < .12f)) return false;
+    return toPixel(u, v, x, y);
+}
+
+void afterButton(void* cs, U now) {
+    Hands h;
+    h.gs = at<void*>(cs, 0x80);
+    h.tick = now;
+    for (int i = 0; i < 2; i++) {
+        const float* f = reinterpret_cast<const float*>(static_cast<P>(cs) + (i ? 0x200 : 0x1f0));
+        h.tip[i] = {f[0], f[1], f[2]};
+        h.valid[i] = f[3] == 1.f && finite(h.tip[i]) && (f[0] != 0 || f[1] != 0 || f[2] != 0);
+    }
+    if (!h.valid[0] && !h.valid[1]) return;
+    hands[cs] = h;
+    for (auto it = hands.begin(); it != hands.end();) it = now - it->second.tick > 5000 ? hands.erase(it) : std::next(it);
+    if (!dock.active) return;
+    auto source = hands.find(touchSource);
+    bool stale = !touchSource || source == hands.end() || now - source->second.tick > 500;
+    if (stale || (h.gs == dock.gs && touchSource != cs && source->second.gs != dock.gs)) {
+        if (touchSource != cs) logf("posters: fingertips from touch system %p (gamespace %p)", cs, h.gs);
+        touchSource = cs;
+    }
+    if (touchSource != cs) return;
+    for (unsigned i = 0; i < 2; i++) {
+        Finger& f = fingers[i];
+        int x = 0, y = 0;
+        bool on = h.valid[i] && contact(h.tip[i], f.down, x, y);
+        if (on && !f.down) {
+            f = {true, x, y};
+            arcade::pushTouch(shared, i, arcade::PointDown, x, y);
+            static int logged = 0;
+            if (logged++ < 5) logf("posters: finger %u touched the poster at pixel %d,%d", i, x, y);
+        } else if (on && (std::abs(x - f.x) >= 2 || std::abs(y - f.y) >= 2)) {
+            f.x = x; f.y = y;
+            arcade::pushTouch(shared, i, arcade::PointMove, x, y);
+        } else if (!on && f.down) {
+            f.down = false;
+            arcade::pushTouch(shared, i, arcade::PointUp, f.x, f.y);
+        }
+    }
+}
+
+// Where a ray (world space) meets the docked poster's picture: pixel and distance in metres.
+bool rayHit(Vec worldOrigin, Vec worldDir, int& x, int& y, float& metres) {
+    Vec o = dock.level.unapply(dock.space.unapply(worldOrigin));
+    Vec d = dock.level.rotate(dock.space.rotate(worldDir, true), true);
+    float bestT = 1e9f, u = 0, v = 0;
+    for (auto& t : meshes[dock.mesh].tris) {  // Moller-Trumbore
+        Vec e1 = t.b - t.a, e2 = t.c - t.a, pv = cross(d, e2);
+        float det = dot(e1, pv);
+        if (std::fabs(det) < 1e-9f) continue;
+        float inv = 1 / det;
+        Vec tv = o - t.a;
+        float b = dot(tv, pv) * inv;
+        if (b < 0 || b > 1) continue;
+        Vec qv = cross(tv, e1);
+        float c = dot(d, qv) * inv;
+        if (c < 0 || b + c > 1) continue;
+        float along = dot(e2, qv) * inv;
+        if (along > 0 && along < bestT) { bestT = along; interpolate(t, 1 - b - c, b, c, u, v); }
+    }
+    metres = bestT * length(d) * dock.level.s * dock.space.s;
+    return bestT < 1e9f && toPixel(u, v, x, y);
+}
+
+// Light gun: a local shot's ray against the docked poster's face.
+void afterFire(void* cs, unsigned handle) {
+    if (!dock.active) return;
+    P bullet = at<P>(cs, 0xf8) + size_t(at<unsigned short>(at<P>(cs, 0xc8), size_t(handle & 0xffff) * 4)) * BULLET_STRIDE;
+    Vec origin = at<Vec>(bullet, 0xf8), dir = at<Vec>(bullet, 0x104);
+    if (!finite(origin) || !finite(dir) || length(dir) < .5f) return;
+    Xform space = gamespaceXform(at<void*>(cs, 0x80));
+    Vec worldOrigin = space.apply(origin), worldDir = space.rotate(dir);
+    static int logged = 0;
+    int x, y;
+    float metres = 0;
+    if (rayHit(worldOrigin, worldDir, x, y, metres)) {
+        arcade::pushTouch(shared, arcade::SHOT_POINTER, arcade::Shot, x, y);
+        InterlockedIncrement(&shared->shots);
+        if (logged++ < 20) logf("light gun: hit pixel %d,%d (%.1f m from the muzzle)", x, y, metres);
+    } else if (logged++ < 20) {
+        logf("light gun: shot from %.2f %.2f %.2f dir %.2f %.2f %.2f missed the docked poster",
+             worldOrigin.x, worldOrigin.y, worldOrigin.z, worldDir.x, worldDir.y, worldDir.z);
+    }
+}
+
+void safeAfterFire(void* cs, unsigned handle) {
+    __try { afterFire(cs, handle); } __except (EXCEPTION_EXECUTE_HANDLER) { failPosters("access fault reading a bullet"); }
+}
+
+U fire(void* cs, unsigned handle, void* info, float speed, void* muzzle, void* dir, int fromNetwork, int flag) {
+    U r = fireOriginal(cs, handle, info, speed, muzzle, dir, fromNetwork, flag);
+    if (!fault && !fromNetwork && dock.active) {
+        std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);  // never block an engine thread
+        if (!lock.owns_lock()) return r;
+        safeAfterFire(cs, handle);
+    }
+    return r;
+}
+
+void safeAfterButton(void* cs, U now) {
+    __try { afterButton(cs, now); } __except (EXCEPTION_EXECUTE_HANDLER) { failPosters("access fault reading fingertips"); }
+}
+
+void buildGeometry() {
+    meshes.clear();
+    table.clear();
+    for (auto& m : POSTER_MESHES) {
+        Mesh mesh;
+        Vec sum;
+        for (unsigned i = 0; i < m.count; i++) {
+            const PosterTri& p = m.tris[i];
+            Tri t;
+            t.a = {p.p[0][0], p.p[0][1], p.p[0][2]};
+            t.b = {p.p[1][0], p.p[1][1], p.p[1][2]};
+            t.c = {p.p[2][0], p.p[2][1], p.p[2][2]};
+            Vec n = cross(t.b - t.a, t.c - t.a);
+            t.n = n * (1.f / std::max(length(n), 1e-9f));
+            memcpy(t.uv, p.uv, sizeof(t.uv));
+            sum = sum + (t.a + t.b + t.c) * (1.f / 3);
+            mesh.tris.push_back(t);
+        }
+        mesh.center = sum * (1.f / float(std::max(1u, m.count)));
+        meshes.push_back(std::move(mesh));
+    }
+    for (unsigned i = 0; i < sizeof(POSTERS) / sizeof(POSTERS[0]); i++) table[POSTERS[i].actor] = i;
+}
+
+bool hook(P exe, unsigned rva, void* detour, void** original) {
+    MH_STATUS s = MH_CreateHook(exe + rva, detour, original);
+    if (s == MH_OK) s = MH_EnableHook(exe + rva);
+    if (s != MH_OK) { logf("posters: hook at %x failed: %s", rva, MH_StatusToString(s)); return false; }
+    return true;
+}
+
+}  // namespace
+
+bool install(unsigned char* exe, arcade::Shared* s) {
+    shared = s;
+    if (!shared) return false;
+    for (auto& sig : SIGNATURES)
+        if (memcmp(exe + sig.rva, sig.bytes, 16) != 0) { logf("posters: code signature mismatch at %x; dock disabled", sig.rva); return false; }
+    buildGeometry();
+    overrideTexture = reinterpret_cast<Override>(exe + RVA_OVERRIDE);
+    handled = shared->dockSerial;  // ignore requests from before this session
+    shared->dockDone = handled;
+    shared->dockState = arcade::Undocked;
+    bool ok = hook(exe, RVA_UPDATE, reinterpret_cast<void*>(update), reinterpret_cast<void**>(&updateOriginal)) &&
+              hook(exe, RVA_DESTROY, reinterpret_cast<void*>(destroy), reinterpret_cast<void**>(&destroyOriginal)) &&
+              hook(exe, RVA_FIRE, reinterpret_cast<void*>(fire), reinterpret_cast<void**>(&fireOriginal));
+    if (!ok) { fault = true; return false; }
+    logf("posters: dock ready: %zu posters, %zu face meshes", table.size(), meshes.size());
+    return true;
+}
+
+void afterButtonUpdate(void* cs) {
+    if (fault || !shared) return;
+    U now = GetTickCount64();
+    std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);  // never block an engine thread
+    if (!lock.owns_lock()) return;
+    safeAfterButton(cs, now);
+}
+
+void heartbeat(unsigned long long now) {
+    if (!shared) return;
+    std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return;
+    LONG serial = shared->dockSerial;
+    if (serial == handled) return;
+    if (fault) { handled = serial; answer(arcade::DockFailed, "Dock is off for this session (see runtime.log)."); return; }
+    // Nobody with posters is running: answer instead of leaving the request hanging.
+    static U pendingSince = 0;
+    static LONG pendingSerial = 0;
+    if (pendingSerial != serial) { pendingSerial = serial; pendingSince = now; }
+    if (now - pendingSince < 1500 || (lastPosterUpdate && now - lastPosterUpdate < 1000)) return;
+    handled = serial;
+    if (!shared->dockWant) answer(arcade::Undocked, "Not docked.");
+    else answer(arcade::DockFailed, "No lobby poster here. Dock works in the social and combat lobbies.");
+}
+
+}  // namespace posters

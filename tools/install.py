@@ -3,11 +3,12 @@
     python tools/install.py status
     python tools/install.py install     # builds the tab from your manifest, backs up, installs
     python tools/install.py update      # after build.cmd: refresh plugin, host and arcade.ini only
+    python tools/install.py reinstall   # restore + install: needed when the tablet data changes
     python tools/install.py restore     # puts every original file back
     python tools/install.py configure   # (dev) write dist/EchoArcade/arcade.ini only
 
 What install changes (all backed up under EchoArcade/backups/<time>/):
-  _data/.../manifests/48037dc70b0ecab2      patched manifest (adds 6 tablet resources)
+  _data/.../manifests/48037dc70b0ecab2      patched manifest (tablet resources + the DOCK poster screen)
   _data/.../packages/48037dc70b0ecab2_N     new package with those resources
   bin/win10/echoloader.json                 adds {"file": "EchoArcade.dll"}
   bin/win10/plugins/EchoArcade.dll          runtime plugin
@@ -28,6 +29,7 @@ DEFAULT_GAME = ROOT.parent / 'ready-at-dawn-echo-arena'
 STATE = ROOT / 'install_state.json'
 MID = '48037dc70b0ecab2'
 EXE_TIMESTAMP, EXE_SIZE = 1683152886, 35852288
+TAB_SCHEMA = 2  # bump when build_arcade_tab.py output changes (2: DOCK poster screen)
 
 
 def sha(path: Path):
@@ -143,7 +145,7 @@ def install(game: Path):
     ensure_loader_entry(plugins)
     p['loader'].write_text(json.dumps(loader, indent=4) + '\n', encoding='utf-8')
 
-    STATE.write_text(json.dumps(dict(game=str(game), backup=str(backup), package=meta['package'],
+    STATE.write_text(json.dumps(dict(game=str(game), backup=str(backup), package=meta['package'], tab_schema=TAB_SCHEMA,
                                      manifest_sha256=sha(p['manifest']), original_manifest_sha256=meta['base_manifest_sha256']), indent=2))
     check_echoloader(p)
     print(f'Installed. Backups in {backup}')
@@ -201,7 +203,11 @@ def update(game: Path):
     check_game(game)
     if not STATE.exists():
         raise SystemExit('Not installed yet: run install first.')
-    p = paths(Path(json.loads(STATE.read_text())['game']))
+    state = json.loads(STATE.read_text())
+    if state.get('tab_schema', 1) < TAB_SCHEMA:
+        raise SystemExit('This version changes the tablet data (DOCK adds a poster screen), so update is not enough.\n'
+                         'Close Echo VR and run:  .venv\\Scripts\\python tools\\install.py reinstall')
+    p = paths(Path(state['game']))
     copy_binaries(p)
     loader = load_loader(p['loader'])
     ensure_loader_entry(loader.setdefault('plugins', []))
@@ -257,7 +263,7 @@ def status(game: Path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('action', choices=['install', 'update', 'restore', 'status', 'configure'])
+    ap.add_argument('action', choices=['install', 'update', 'reinstall', 'restore', 'status', 'configure'])
     ap.add_argument('--game', type=Path, default=DEFAULT_GAME)
     ap.add_argument('--force', action='store_true')
     a = ap.parse_args()
@@ -265,6 +271,11 @@ def main():
         install(a.game)
     elif a.action == 'update':
         update(a.game)
+    elif a.action == 'reinstall':
+        game = Path(json.loads(STATE.read_text())['game']) if STATE.exists() else a.game
+        if STATE.exists():
+            restore(game, a.force)
+        install(game)
     elif a.action == 'restore':
         restore(a.game, a.force)
     elif a.action == 'status':

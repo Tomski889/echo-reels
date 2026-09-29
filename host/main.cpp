@@ -28,6 +28,9 @@ const Rect RETRO_HOME{108, 470, 184, 526}, RETRO_MENU{936, 470, 1012, 526};
 const Rect BALATRO_HOME{0, 0, 64, 64};
 const Rect RESUME_BUTTON{312, 190, 712, 270}, QUIT_BUTTON{312, 300, 712, 380};
 const Rect BACK_BUTTON{12, 10, 150, 66};
+const Rect DOCK_BUTTON{744, 12, 1008, 64};                  // launcher header
+const Rect MENU_DOCK_BUTTON{312, 400, 712, 470};            // in-app menu
+constexpr uint64_t SHOT_PRESS_MS = 90;                      // a shot holds its tap this long
 const Rect PAGE_UP{916, 84, 1012, 298}, PAGE_DOWN{916, 306, 1012, 520};
 constexpr int ROWS_PER_PAGE = 6, ROW_Y = 84, ROW_H = 72;
 const Rect SEEK_BAR{20, 448, 1004, 476};
@@ -93,7 +96,9 @@ public:
             }
             if (mode_ == Mode::PlexLink) pollPlexLink(now);
             reportPlexProgress(now);
-            bool visible = shared_->pageVisible != 0 || standalone_;
+            pollDock();
+            if (shotUpAt_ && now >= shotUpAt_) { shotUpAt_ = 0; onTouch({SHOT_TOUCH, false, shotX_, shotY_}); }
+            bool visible = shared_->pageVisible != 0 || standalone_ || shared_->dockState == arcade::Docked;
             if (now - lastPublish >= (visible ? 16u : 200u)) {
                 render();
                 publish();
@@ -146,6 +151,7 @@ private:
         gameCells_.clear();
         pointerDown_ = false;
         pressed_ = -1;
+        shotUpAt_ = 0;
     }
     void push(Screen s) {
         screens_.push_back(std::move(s));
@@ -295,10 +301,54 @@ private:
             auto& e = shared_->touches[uint32_t(readPos_) % arcade::TOUCH_RING];
             if (e.seq != uint32_t(readPos_) + 1) break;  // still being written
             MemoryBarrier();
-            if (shared_->cols && e.cell < shared_->cols * shared_->rows)
-                onTouch(touchFromCell(int(e.cell), e.kind == arcade::TouchDown, int(shared_->cols), int(shared_->rows)));
+            if (e.kind <= arcade::TouchDown) {
+                if (shared_->cols && e.cell < shared_->cols * shared_->rows)
+                    onTouch(touchFromCell(int(e.cell), e.kind == arcade::TouchDown, int(shared_->cols), int(shared_->rows)));
+            } else {
+                int x = std::clamp(int(e.xy & 0xffff), 0, SCREEN_W - 1), y = std::clamp(int(e.xy >> 16), 0, SCREEN_H - 1);
+                if (e.kind == arcade::Shot) onShot(x, y);
+                else if (e.cell < 2) onTouch({POSTER_TOUCH + int(e.cell), e.kind != arcade::PointUp, x, y, e.kind == arcade::PointMove});
+            }
             readPos_++;
         }
+    }
+
+    // ------------------------------------------------ dock (lobby poster) and light gun
+    void requestDock(bool dock) {
+        shared_->dockWant = dock ? 1 : 0;
+        MemoryBarrier();
+        dockAsked_ = InterlockedIncrement(&shared_->dockSerial);
+        dockAskedAt_ = GetTickCount64();
+        message_ = dock ? L"Looking for the nearest lobby poster..." : L"Undocking...";
+        hostLog("dock: asked to %s", dock ? "dock" : "undock");
+    }
+    bool docked() const { return shared_->dockState == arcade::Docked; }
+    bool dockPending() const { return dockAsked_ && shared_->dockDone != dockAsked_; }
+    void pollDock() {
+        LONG done = shared_->dockDone;
+        if (done == dockSeen_) return;
+        dockSeen_ = done;
+        char text[sizeof(shared_->dockText) + 1] = {};
+        memcpy(text, const_cast<const char*>(shared_->dockText), sizeof(shared_->dockText));
+        std::wstring w;
+        for (const char* c = text; *c; c++) w += wchar_t(static_cast<unsigned char>(*c));
+        if (!w.empty()) message_ = w;
+        hostLog("dock: state %ld: %s", shared_->dockState, text);
+        if (!docked()) { held_.erase(POSTER_TOUCH); held_.erase(POSTER_TOUCH + 1); }
+    }
+    std::wstring dockLabel() const {
+        if (dockPending() && GetTickCount64() - dockAskedAt_ < 5000) return L"DOCKING...";
+        return docked() ? L"UNDOCK POSTER" : L"DOCK TO POSTER";
+    }
+    void dockTapped() { requestDock(!docked()); }
+
+    // A bullet hit the docked poster: a short tap exactly where it landed (a click in
+    // Balatro, a button on the launcher, menus, player and on-screen RetroPad).
+    void onShot(int x, int y) {
+        if (shotUpAt_) onTouch({SHOT_TOUCH, false, shotX_, shotY_});
+        shotX_ = x; shotY_ = y;
+        onTouch({SHOT_TOUCH, true, x, y});
+        shotUpAt_ = GetTickCount64() + SHOT_PRESS_MS;
     }
 
     // ------------------------------------------------ SETTINGS tab
@@ -409,6 +459,7 @@ private:
     }
 
     void launcherTouch(const Touch& t) {
+        if (tapped(t, 500, DOCK_BUTTON)) { dockTapped(); return; }
         for (size_t i = 0; i < apps_.size(); i++)
             if (tapped(t, int(i), tileRect(i))) { launch(apps_[i]); return; }
         if (!t.down) pressed_ = -1;
@@ -444,6 +495,7 @@ private:
     void menuTouch(const Touch& t) {
         if (tapped(t, 200, RESUME_BUTTON)) mode_ = Mode::Running;
         else if (tapped(t, 201, QUIT_BUTTON)) { session_.quit(); message_ = L"Closing " + current_.title + L"..."; }
+        else if (tapped(t, 202, MENU_DOCK_BUTTON)) dockTapped();
     }
 
     void playerTouch(const Touch& t) {
@@ -519,7 +571,9 @@ private:
 
     void balatroTouch(const Touch& t) {
         if (BALATRO_HOME.contains(t.x, t.y)) { if (!t.down) openMenu(); return; }
-        if (t.down) gameCells_.push_back(t);
+        auto same = std::find_if(gameCells_.begin(), gameCells_.end(), [&](const Touch& g) { return g.cell == t.cell; });
+        if (t.move && same != gameCells_.end()) *same = t;
+        else if (t.down) gameCells_.push_back(t);
         else gameCells_.erase(std::remove_if(gameCells_.begin(), gameCells_.end(), [&](const Touch& g) { return g.cell == t.cell; }), gameCells_.end());
         float u, v;
         if (!gameCells_.empty()) {
@@ -573,7 +627,8 @@ private:
     void drawLauncher() {
         canvas_.clear(rgb(14, 16, 24));
         header(L"ECHO ARCADE", false);
-        canvas_.text({600, 0, 1000, 76}, L"tap a tile", 22, rgb(150, 160, 180), false, 2);
+        canvas_.text({420, 0, 730, 76}, docked() ? L"on the lobby poster" : L"tap a tile", 22, rgb(150, 160, 180), false, 2);
+        button(DOCK_BUTTON, dockLabel(), pressed_ == 500, docked() ? rgb(40, 110, 60) : rgb(50, 58, 84), 22);
         for (size_t i = 0; i < apps_.size(); i++) {
             auto& a = apps_[i];
             Rect r = tileRect(i);
@@ -699,7 +754,8 @@ private:
         canvas_.text({0, 90, SCREEN_W, 160}, current_.title + L" - " + current_.subtitle, 34, rgb(255, 255, 255));
         button(RESUME_BUTTON, L"RESUME", pressed_ == 200, rgb(40, 110, 60), 32);
         button(QUIT_BUTTON, L"QUIT TO LAUNCHER", pressed_ == 201, rgb(130, 40, 40), 32);
-        if (!message_.empty()) canvas_.text({0, 420, SCREEN_W, 470}, message_, 22, rgb(255, 220, 200));
+        button(MENU_DOCK_BUTTON, dockLabel(), pressed_ == 202, docked() ? rgb(40, 110, 60) : rgb(50, 58, 84), 28);
+        if (!message_.empty()) canvas_.text({0, 486, SCREEN_W, 540}, message_, 22, rgb(255, 220, 200));
     }
 
     void render() {
@@ -753,6 +809,9 @@ private:
     Rect fit_{};
     std::vector<Setting> settings_;
     bool lastSettings_ = false;
+    LONG dockAsked_ = 0, dockSeen_ = 0;
+    uint64_t dockAskedAt_ = 0, shotUpAt_ = 0;
+    int shotX_ = 0, shotY_ = 0;
 };
 
 }  // namespace
