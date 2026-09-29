@@ -7,10 +7,14 @@
 //     name tables, gamespace +0x370 -> +0xb8, else +0x80, as the engine's own messages do).
 //     Poster: +0x04 u32 art slice, +0x08 texture it shows (-1 = the level's fallback art),
 //     +0x10 texture it replaces on the model, +0x18 handle for +0x08, +0x48 server poster key.
-//     0x140d0f900 per-frame update: resolves +0x48 to +0x08, and re-applies +0x08 when it
-//     changes (fallback art every frame while it is -1).
+//     The system has no per-frame update. 0x140d00050 start (phase callback, once per system
+//     when its level starts) subscribes 0x140d0f900 to the gamespace event
+//     evt_client_settings_changed; that handler resolves +0x48 to +0x08 and re-applies +0x08
+//     when it changed (fallback art while it is -1). So DOCK runs from the touch-button
+//     Update instead, on the poster systems learned at start.
 //     0x140d20410 OverrideTexture(cs, key, poster, slice): loads +0x08 into +0x18 and puts it
-//     on the poster model. 0x140ca3740 destructor.
+//     on the poster model. 0x140cd9430 FallbackArt(cs, key, poster, slice): the level's own
+//     art back on the model. 0x140ca3740 destructor.
 //   Touch buttons (CR15ButtonInteractCS): after its update, +0x1f0 / +0x200 hold the two
 //     fingertips in world space as (x, y, z, 1).
 //   CR15NetBulletCS 0x140ce2020 Fire(cs, bullet, info, speed, muzzle, dir, fromNetwork, flag):
@@ -41,23 +45,27 @@ using P = unsigned char*;
 template <class T> T& at(void* p, size_t n) { return *reinterpret_cast<T*>(static_cast<P>(p) + n); }
 constexpr U NONE = ~U(0);
 
-constexpr unsigned RVA_UPDATE = 0xd0f900, RVA_DESTROY = 0xca3740, RVA_OVERRIDE = 0xd20410, RVA_FIRE = 0xce2020;
+constexpr unsigned RVA_START = 0xd00050, RVA_DESTROY = 0xca3740, RVA_OVERRIDE = 0xd20410, RVA_FALLBACK = 0xcd9430,
+                   RVA_FIRE = 0xce2020;
 struct Signature { unsigned rva; unsigned char bytes[16]; };
 constexpr Signature SIGNATURES[] = {
-    {RVA_UPDATE, {0x4c,0x8b,0xdc,0x56,0x48,0x83,0xec,0x60,0x48,0x8b,0x81,0xb8,0x00,0x00,0x00,0x48}},
+    {RVA_START, {0x40,0x53,0x48,0x83,0xec,0x40,0x48,0x8b,0xd9,0xe8,0x32,0xe0,0x3c,0xff,0x85,0xc0}},
     {RVA_DESTROY, {0x48,0x89,0x4c,0x24,0x08,0x53,0x56,0x57,0x48,0x83,0xec,0x20,0x8b,0xf2,0x48,0x8b}},
     {RVA_OVERRIDE, {0x48,0x89,0x5c,0x24,0x18,0x55,0x56,0x57,0x48,0x83,0xec,0x40,0x48,0x8b,0x81,0xb8}},
+    {RVA_FALLBACK, {0x48,0x89,0x5c,0x24,0x18,0x56,0x57,0x41,0x56,0x48,0x83,0xec,0x40,0x48,0x8b,0x81}},
     {RVA_FIRE, {0x48,0x89,0x5c,0x24,0x10,0x55,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57}},
 };
 constexpr unsigned POSTER_STRIDE = 0x58, BULLET_STRIDE = 0x298;
 
-using Update = void (*)(void*);
+using Start = U (*)(void*);
 using Destroy = void* (*)(void*, unsigned);
 using Override = int (*)(void*, void*, void*, U);
+using Fallback = void (*)(void*, void*, void*, U);
 using Fire = U (*)(void*, unsigned, void*, float, void*, void*, int, int);
-Update updateOriginal;
+Start startOriginal;
 Destroy destroyOriginal;
 Override overrideTexture;
+Fallback fallbackArt;
 Fire fireOriginal;
 
 arcade::Shared* shared = nullptr;
@@ -152,8 +160,9 @@ struct Dock {
     U lastSeen = 0;
 } dock;
 LONG handled = 0;               // last dockSerial answered
-U lastPosterUpdate = 0;         // any poster system ran (the level has posters)
-std::set<void*> seenSystems;
+U lastTick = 0;                 // the touch-button Update last drove DOCK
+std::set<void*> systems;        // live poster systems (from start to destructor)
+std::set<void*> described;      // logged once each
 
 // Which POSTERS entry a poster-system key is (by the actor's level name), or -1.
 int posterOf(void* gs, U handle) {
@@ -207,68 +216,82 @@ void releaseFingers() {
         if (fingers[i].down) { arcade::pushTouch(shared, i, arcade::PointUp, fingers[i].x, fingers[i].y); fingers[i].down = false; }
 }
 
+// A poster's own art back on its model: the server poster it had, else the level's art.
+void restoreArt(void* cs, unsigned index, U name, U serverKey) {
+    P item = at<P>(cs, 0x100) + size_t(index) * POSTER_STRIDE;
+    U key[2] = {at<U>(at<P>(cs, 0x108), size_t(index) * 16), at<U>(at<P>(cs, 0x108), size_t(index) * 16 + 8)};
+    at<U>(item, 0x48) = serverKey;
+    at<U>(item, 0x08) = name;
+    if (name != NONE) {
+        int r = overrideTexture(cs, key, item, at<unsigned>(item, 4));
+        if (r == 0) return;
+        at<U>(item, 0x08) = NONE;
+        logf("posters: restoring the server poster failed (%d); showing the level's art", r);
+    }
+    fallbackArt(cs, key, item, at<unsigned>(item, 4));  // nothing re-applies it per frame
+}
+
 void undock(const char* why, LONG reportState = arcade::Undocked) {
     if (!dock.active) return;
     stream::setPosterActive(false);  // no copies into the texture from here on
     releaseFingers();
     void* cs = dock.cs;
     unsigned index = dock.index;
-    P item = at<P>(cs, 0x100) + size_t(index) * POSTER_STRIDE;
     bool same = index < at<unsigned short>(cs, 0xfc) && at<U>(at<P>(cs, 0x108), size_t(index) * 16) == dock.handle;
-    if (same) {
-        at<U>(item, 0x48) = dock.savedKey;
-        at<U>(item, 0x08) = dock.savedName;
-        if (dock.savedName != NONE) {
-            U key[2] = {at<U>(at<P>(cs, 0x108), size_t(index) * 16), at<U>(at<P>(cs, 0x108), size_t(index) * 16 + 8)};
-            int r = overrideTexture(cs, key, item, at<unsigned>(item, 4));
-            if (r != 0) { at<U>(item, 0x08) = NONE; logf("posters: restoring the server poster failed (%d); showing the level's art", r); }
-        }
-        // savedName == NONE: the poster system puts the level's own art back next frame.
-    }
+    if (same) restoreArt(cs, index, dock.savedName, dock.savedKey);
     dock = Dock{};
     touchSource = nullptr;
     answer(reportState, "%s", why);
 }
 
-// Poster system `cs` is inside its own update: safe to use it and its model system.
-void handleRequest(void* cs, U now) {
+// Engine thread, inside the touch-button Update: the nearest poster of every live poster system.
+void handleRequest(U now) {
     LONG serial = shared->dockSerial;
-    if (serial == handled) return;
-    if (dock.active && dock.cs != cs) return;  // the docked poster's own system answers
+    if (serial == handled || systems.empty()) return;  // no poster system: the heartbeat answers
     handled = serial;
     if (!shared->dockWant) {
         if (dock.active) undock("Undocked: the poster shows its own picture again.");
         else answer(arcade::Undocked, "Not docked.");
         return;
     }
-    void* gs = at<void*>(cs, 0x80);
-    Vec player;
-    if (!playerPosition(gs, now, player)) {
+    void* bestCs = nullptr;
+    unsigned best = 0;
+    float bestDistance = 1e9f;
+    Vec player, bestPlayer;
+    Xform bestSpace;
+    bool sawHands = false;
+    for (void* cs : systems) {
+        void* gs = at<void*>(cs, 0x80);
+        if (!playerPosition(gs, now, player)) continue;
+        sawHands = true;
+        Xform space = gamespaceXform(gs);
+        unsigned count = at<unsigned short>(cs, 0xfc);
+        P keys = at<P>(cs, 0x108);
+        for (unsigned i = 0; i < count && keys; i++) {
+            int which = posterOf(gs, at<U>(keys, size_t(i) * 16));
+            if (which < 0) continue;
+            const PosterInfo& info = POSTERS[which];
+            Xform level{{info.rot[0], info.rot[1], info.rot[2], info.rot[3]}, {info.pos[0], info.pos[1], info.pos[2]}, info.scale[0]};
+            float d = length(space.apply(level.apply(meshes[info.mesh].center)) - player);
+            if (d < bestDistance) { bestDistance = d; bestCs = cs; best = i; bestPlayer = player; bestSpace = space; }
+        }
+    }
+    if (!sawHands) {
         answer(arcade::DockFailed, "Could not find your hands - touch the tablet, then press DOCK again.");
         return;
     }
-    Xform space = gamespaceXform(gs);
-    unsigned count = at<unsigned short>(cs, 0xfc);
-    P keys = at<P>(cs, 0x108);
-    int best = -1;
-    float bestDistance = 1e9f;
-    for (unsigned i = 0; i < count && keys; i++) {
-        int which = posterOf(gs, at<U>(keys, size_t(i) * 16));
-        if (which < 0) continue;
-        const PosterInfo& info = POSTERS[which];
-        Xform level{{info.rot[0], info.rot[1], info.rot[2], info.rot[3]}, {info.pos[0], info.pos[1], info.pos[2]}, info.scale[0]};
-        float d = length(space.apply(level.apply(meshes[info.mesh].center)) - player);
-        if (d < bestDistance) { bestDistance = d; best = int(i); }
-    }
-    if (best < 0) { answer(arcade::DockFailed, "No poster here can show the arcade."); return; }
+    if (!bestCs) { answer(arcade::DockFailed, "No poster here can show the arcade."); return; }
     if (dock.active) undock("Moving to the nearest poster.");
     handled = serial;  // undock() answered with the same serial; the final answer follows
+    void* cs = bestCs;
+    void* gs = at<void*>(cs, 0x80);
+    P keys = at<P>(cs, 0x108);
     const PosterInfo& info = POSTERS[posterOf(gs, at<U>(keys, size_t(best) * 16))];
     P item = at<P>(cs, 0x100) + size_t(best) * POSTER_STRIDE;
     Dock d;
-    d.cs = cs; d.gs = gs; d.index = unsigned(best); d.actor = info.actor; d.handle = at<U>(keys, size_t(best) * 16); d.mesh = info.mesh;
+    d.cs = cs; d.gs = gs; d.index = best; d.actor = info.actor; d.handle = at<U>(keys, size_t(best) * 16); d.mesh = info.mesh;
     d.level = Xform{{info.rot[0], info.rot[1], info.rot[2], info.rot[3]}, {info.pos[0], info.pos[1], info.pos[2]}, info.scale[0]};
-    d.space = space;
+    d.space = bestSpace;
     d.savedName = at<U>(item, 0x08);
     d.savedKey = at<U>(item, 0x48);
     at<U>(item, 0x48) = NONE;  // stop the server's poster from being resolved back in
@@ -276,8 +299,7 @@ void handleRequest(void* cs, U now) {
     U key[2] = {at<U>(keys, size_t(best) * 16), at<U>(keys, size_t(best) * 16 + 8)};
     int r = overrideTexture(cs, key, item, NONE);
     if (r != 0) {
-        at<U>(item, 0x48) = d.savedKey;
-        at<U>(item, 0x08) = NONE;  // the level's art comes back next frame; a server poster when it resolves again
+        restoreArt(cs, best, NONE, d.savedKey);  // as the engine does when a poster fails to load
         answer(arcade::DockFailed, "The poster refused the arcade screen (error %d, see runtime.log).", r);
         return;
     }
@@ -285,50 +307,58 @@ void handleRequest(void* cs, U now) {
     d.lastSeen = now;
     dock = d;
     Vec center = d.space.apply(d.level.apply(meshes[d.mesh].center));
-    logf("posters: docked on %016llx (slot %u, was %016llx/%016llx) at %.2f %.2f %.2f; you at %.2f %.2f %.2f; texture %s",
-         info.actor, best, d.savedName, d.savedKey, center.x, center.y, center.z, player.x, player.y, player.z,
+    logf("posters: docked on %016llx (system %p slot %u, was %016llx/%016llx) at %.2f %.2f %.2f; you at %.2f %.2f %.2f; texture %s",
+         info.actor, cs, best, d.savedName, d.savedKey, center.x, center.y, center.z, bestPlayer.x, bestPlayer.y, bestPlayer.z,
          stream::posterTextureReady() ? "ready" : "NOT CREATED YET");
     stream::setPosterActive(true);
     answer(arcade::Docked, "Docked on the nearest poster (%.1f m away). Touch it, or shoot it in combat.", bestDistance);
 }
 
-void afterUpdate(void* cs) {
-    U now = GetTickCount64();
-    lastPosterUpdate = now;
-    if (seenSystems.insert(cs).second) {
-        unsigned count = at<unsigned short>(cs, 0xfc), known = 0;
-        P keys = at<P>(cs, 0x108);
-        for (unsigned i = 0; i < count && keys; i++) known += posterOf(at<void*>(cs, 0x80), at<U>(keys, size_t(i) * 16)) >= 0 ? 1 : 0;
-        Xform space = gamespaceXform(at<void*>(cs, 0x80));
-        logf("posters: poster system %p (gamespace %p at %.2f %.2f %.2f x%.2f): %u posters, %u can dock",
-             cs, at<void*>(cs, 0x80), space.t.x, space.t.y, space.t.z, space.s, count, known);
+void describe(void* cs) {
+    unsigned count = at<unsigned short>(cs, 0xfc), known = 0;
+    P keys = at<P>(cs, 0x108);
+    for (unsigned i = 0; i < count && keys; i++) known += posterOf(at<void*>(cs, 0x80), at<U>(keys, size_t(i) * 16)) >= 0 ? 1 : 0;
+    Xform space = gamespaceXform(at<void*>(cs, 0x80));
+    logf("posters: poster system %p (gamespace %p at %.2f %.2f %.2f x%.2f): %u posters, %u can dock",
+         cs, at<void*>(cs, 0x80), space.t.x, space.t.y, space.t.z, space.s, count, known);
+}
+
+// Keeps the arcade on the docked poster.
+void maintain(U now) {
+    if (!dock.active) return;
+    void* cs = dock.cs;
+    dock.lastSeen = now;
+    unsigned index = dock.index;
+    if (index >= at<unsigned short>(cs, 0xfc) || at<U>(at<P>(cs, 0x108), size_t(index) * 16) != dock.handle) {
+        stream::setPosterActive(false);
+        releaseFingers();
+        dock = Dock{};
+        answer(arcade::Undocked, "The poster went away; undocked.");
+        return;
     }
-    if (dock.active && dock.cs == cs) {
-        dock.lastSeen = now;
-        unsigned index = dock.index;
-        if (index >= at<unsigned short>(cs, 0xfc) || at<U>(at<P>(cs, 0x108), size_t(index) * 16) != dock.handle) {
-            stream::setPosterActive(false);
-            releaseFingers();
-            dock = Dock{};
-            answer(arcade::Undocked, "The poster went away; undocked.");
-        } else {
-            P item = at<P>(cs, 0x100) + size_t(index) * POSTER_STRIDE;
-            // The server assigned new art to this poster while we are docked: remember it for
-            // undock and keep the arcade on.
-            if (at<U>(item, 0x48) != NONE) { dock.savedKey = at<U>(item, 0x48); at<U>(item, 0x48) = NONE; }
-            if (at<U>(item, 0x08) != ARCADE_POSTER_TEXTURE) {
-                logf("posters: the poster's art changed under the dock; putting the arcade back");
-                dock.savedName = at<U>(item, 0x08);
-                at<U>(item, 0x08) = ARCADE_POSTER_TEXTURE;
-                U key[2] = {at<U>(at<P>(cs, 0x108), size_t(index) * 16), at<U>(at<P>(cs, 0x108), size_t(index) * 16 + 8)};
-                stream::setPosterActive(false);
-                int r = overrideTexture(cs, key, item, NONE);
-                if (r == 0) stream::setPosterActive(true);
-                else { at<U>(item, 0x08) = dock.savedName; dock = Dock{}; answer(arcade::Undocked, "The server replaced the poster; undocked."); }
-            }
-        }
+    P item = at<P>(cs, 0x100) + size_t(index) * POSTER_STRIDE;
+    // The server assigned new art to this poster while we are docked: remember it for
+    // undock and keep the arcade on.
+    if (at<U>(item, 0x48) != NONE) { dock.savedKey = at<U>(item, 0x48); at<U>(item, 0x48) = NONE; }
+    if (at<U>(item, 0x08) != ARCADE_POSTER_TEXTURE) {
+        logf("posters: the poster's art changed under the dock; putting the arcade back");
+        dock.savedName = at<U>(item, 0x08);
+        at<U>(item, 0x08) = ARCADE_POSTER_TEXTURE;
+        U key[2] = {at<U>(at<P>(cs, 0x108), size_t(index) * 16), at<U>(at<P>(cs, 0x108), size_t(index) * 16 + 8)};
+        stream::setPosterActive(false);
+        int r = overrideTexture(cs, key, item, NONE);
+        if (r == 0) stream::setPosterActive(true);
+        else { at<U>(item, 0x08) = dock.savedName; dock = Dock{}; answer(arcade::Undocked, "The server replaced the poster; undocked."); }
     }
-    handleRequest(cs, now);
+}
+
+// Engine thread, after a touch-button Update (every frame while a lobby is up).
+void tick(U now) {
+    lastTick = now;
+    for (void* cs : systems)
+        if (described.insert(cs).second) describe(cs);
+    maintain(now);
+    handleRequest(now);
 }
 
 // ---- hooks ----
@@ -338,21 +368,22 @@ void failPosters(const char* why) {
     stream::setPosterActive(false);
 }
 
-void safeAfterUpdate(void* cs) {
-    __try { afterUpdate(cs); } __except (EXCEPTION_EXECUTE_HANDLER) { failPosters("access fault in the poster update"); }
+void safeTick(U now) {
+    __try { tick(now); } __except (EXCEPTION_EXECUTE_HANDLER) { failPosters("access fault in the poster tick"); }
 }
 
-void update(void* cs) {
-    updateOriginal(cs);
-    if (fault) return;
+U start(void* cs) {
+    U r = startOriginal(cs);
     std::lock_guard<std::mutex> lock(mutex);
-    safeAfterUpdate(cs);
+    systems.insert(cs);
+    return r;
 }
 
 void* destroy(void* cs, unsigned flags) {
     {
         std::lock_guard<std::mutex> lock(mutex);
-        seenSystems.erase(cs);
+        systems.erase(cs);
+        described.erase(cs);
         if (dock.active && dock.cs == cs) {
             stream::setPosterActive(false);  // before the level frees anything
             releaseFingers();
@@ -526,10 +557,11 @@ bool install(unsigned char* exe, arcade::Shared* s) {
         if (memcmp(exe + sig.rva, sig.bytes, 16) != 0) { logf("posters: code signature mismatch at %x; dock disabled", sig.rva); return false; }
     buildGeometry();
     overrideTexture = reinterpret_cast<Override>(exe + RVA_OVERRIDE);
+    fallbackArt = reinterpret_cast<Fallback>(exe + RVA_FALLBACK);
     handled = shared->dockSerial;  // ignore requests from before this session
     shared->dockDone = handled;
     shared->dockState = arcade::Undocked;
-    bool ok = hook(exe, RVA_UPDATE, reinterpret_cast<void*>(update), reinterpret_cast<void**>(&updateOriginal)) &&
+    bool ok = hook(exe, RVA_START, reinterpret_cast<void*>(start), reinterpret_cast<void**>(&startOriginal)) &&
               hook(exe, RVA_DESTROY, reinterpret_cast<void*>(destroy), reinterpret_cast<void**>(&destroyOriginal)) &&
               hook(exe, RVA_FIRE, reinterpret_cast<void*>(fire), reinterpret_cast<void**>(&fireOriginal));
     if (!ok) { fault = true; return false; }
@@ -543,6 +575,7 @@ void afterButtonUpdate(void* cs) {
     std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);  // never block an engine thread
     if (!lock.owns_lock()) return;
     safeAfterButton(cs, now);
+    if (!fault) safeTick(now);
 }
 
 void heartbeat(unsigned long long now) {
@@ -552,14 +585,16 @@ void heartbeat(unsigned long long now) {
     LONG serial = shared->dockSerial;
     if (serial == handled) return;
     if (fault) { handled = serial; answer(arcade::DockFailed, "Dock is off for this session (see runtime.log)."); return; }
-    // Nobody with posters is running: answer instead of leaving the request hanging.
+    // No poster system, or no touch-button Update to drive it: answer instead of leaving the
+    // request hanging.
     static U pendingSince = 0;
     static LONG pendingSerial = 0;
     if (pendingSerial != serial) { pendingSerial = serial; pendingSince = now; }
-    if (now - pendingSince < 1500 || (lastPosterUpdate && now - lastPosterUpdate < 1000)) return;
+    if (now - pendingSince < 1500 || (!systems.empty() && lastTick && now - lastTick < 1000)) return;
     handled = serial;
     if (!shared->dockWant) answer(arcade::Undocked, "Not docked.");
-    else answer(arcade::DockFailed, "No lobby poster here. Dock works in the social and combat lobbies.");
+    else if (systems.empty()) answer(arcade::DockFailed, "No lobby poster here. Dock works in the social and combat lobbies.");
+    else answer(arcade::DockFailed, "Could not find your hands - touch the tablet, then press DOCK again.");
 }
 
 }  // namespace posters

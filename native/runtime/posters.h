@@ -14,6 +14,6 @@
 // (tools/build_poster_table.py -> native/generated/posters.h).
 namespace posters {
 bool install(unsigned char* exe, arcade::Shared* shared);  // after MH_Initialize; false = disabled (logged)
-void afterButtonUpdate(void* buttonSystem);                // engine thread, after its touch-button update
+void afterButtonUpdate(void* buttonSystem);                // engine thread, after its touch-button update; drives DOCK
 void heartbeat(unsigned long long now);                    // runtime heartbeat thread, every ~100 ms
 }
