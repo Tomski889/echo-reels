@@ -14,6 +14,11 @@ TAB_SPACING = 139
 TAB_SLOT_CENTERS = tuple(512 + (i - 2.5) * TAB_SPACING for i in range(6))
 ARCADE_SLOT, STOCK_SLOTS, SETTINGS_SLOT = 0, (1, 2, 3, 4), 5
 TAB_Y = (662, 751)
+# Lobby poster screen (DOCK): every dynamic poster maps its face to texture u 0.016..0.876,
+# v 0.032..0.97 (the shader doubles the mesh's v). The frame sits in that face at 16:9 on a
+# ~1.87:1 face, so it keeps its shape on both the flat and the curved posters. Unique size.
+POSTER_TEX_W, POSTER_TEX_H = 1249, 612
+POSTER_X0, POSTER_Y0 = 45, 20              # where the 1024 x 574 frame goes in that texture
 
 
 def tab_rect(slot):

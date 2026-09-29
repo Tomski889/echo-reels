@@ -9,6 +9,7 @@
 #include "../vendor/minhook/include/MinHook.h"
 #include "d3d12_stream.h"
 #include "ovr_tweaks.h"
+#include "posters.h"
 #include "tablet_scale.h"
 #include "log.h"
 #include <algorithm>
@@ -349,6 +350,7 @@ void button(void* cs) {
     { std::lock_guard<std::recursive_mutex> lock(mutex); if (!fault) safeButtonTick(cs); }
     buttonOriginal(cs);
     { std::lock_guard<std::recursive_mutex> lock(mutex); if (!fault) safeButtonTick(cs); }
+    if (!fault) posters::afterButtonUpdate(cs);  // fingertips for the docked lobby poster
 }
 
 void onEvent(void* gs, U event, U actor, U component) {
@@ -421,6 +423,7 @@ void heartbeatLoop() {
             shared->pageVisible = visible;
             shared->pageMode = pageMode;
             if (shared->tabletScale > 0) tablet::request(shared->tabletScale / 1000.f);
+            posters::heartbeat(now);
         }
         stream::setVisible(visible);
     }
@@ -453,6 +456,7 @@ void initialize() {
               hook(0x92f3f0, reinterpret_cast<void*>(button), reinterpret_cast<void**>(&buttonOriginal));
     if (!ok) { fault = true; return; }
     logf("tablet hooks installed; %u touch cells", unsigned(cellIndex.size()));
+    if (shared) posters::install(exe, shared);  // DOCK, poster touch and light gun (disables only itself on a mismatch)
     std::thread(heartbeatLoop).detach();
     if (shared) stream::install(shared);
 }

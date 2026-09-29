@@ -1,6 +1,7 @@
 #include "d3d12_stream.h"
 #include "log.h"
 #include "../generated/arcade_tab.h"
+#include "../generated/posters.h"
 #include "../vendor/minhook/include/MinHook.h"
 #include <d3d12.h>
 #include <atomic>
@@ -42,19 +43,34 @@ Execute origExecute;
 Barrier origBarrier;
 
 arcade::Shared* shared = nullptr;
-std::atomic<bool> visible{false}, running{false}, broken{false};
+std::atomic<bool> running{false}, broken{false};
 std::thread worker;
 
-std::mutex m;  // guards everything below
+// A texture we copy each new host frame into, at (x, y).
+struct Target {
+    const char* name;
+    UINT width, height, x, y;
+    std::atomic<bool> active{false};
+    std::atomic<ID3D12Resource*> fast{nullptr};
+    ID3D12Resource* resource = nullptr;  // AddRef'd while we hold it (guarded by m)
+    D3D12_RESOURCE_DESC desc{};
+    D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
+    UINT64 uploads = 0;
+};
+enum { TABLET, POSTER, TARGETS };
+Target targets[TARGETS] = {
+    {"tablet", ARCADE_TEX_W, ARCADE_TEX_H, 0, 0},
+    {"poster", POSTER_TEX_W, POSTER_TEX_H, POSTER_X0, POSTER_Y0},
+};
+static_assert(ARCADE_TEX_W == arcade::WIDTH && ARCADE_TEX_H == arcade::HEIGHT, "tablet texture is the host frame size");
+static_assert(POSTER_FRAME_W == arcade::WIDTH && POSTER_FRAME_H == arcade::HEIGHT, "poster frame is the host frame size");
+
+std::mutex m;  // guards everything below and each Target's non-atomic fields
 ID3D12Device* device = nullptr;
-ID3D12Resource* target = nullptr;       // AddRef'd while we hold it
-D3D12_RESOURCE_DESC targetDesc{};
-std::atomic<ID3D12Resource*> targetFast{nullptr};
-D3D12_RESOURCE_STATES targetState = D3D12_RESOURCE_STATE_COMMON;
 ID3D12CommandQueue* queue = nullptr;
 ID3D12Fence* fence = nullptr;
 UINT64 fenceValue = 0;
-D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+constexpr UINT ROW_PITCH = arcade::PITCH;  // 4096: already a multiple of D3D12's 256-byte pitch rule
 
 enum class SlotState { Free, Filling, Ready };
 struct Slot {
@@ -70,11 +86,17 @@ Slot slots[2];
 bool gpuReady = false;
 thread_local bool ownCall = false;
 
-bool matches(const D3D12_RESOURCE_DESC* d) {
-    return d && d->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && d->Width == ARCADE_TEX_W &&
-           d->Height == ARCADE_TEX_H && d->DepthOrArraySize == 1 && d->MipLevels <= 1 &&
-           (d->Format == DXGI_FORMAT_B8G8R8A8_UNORM || d->Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
-            d->Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
+bool anyActive() {
+    for (auto& t : targets) if (t.active && t.fast.load(std::memory_order_relaxed)) return true;
+    return false;
+}
+
+Target* matching(const D3D12_RESOURCE_DESC* d) {
+    if (!d || d->Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || d->DepthOrArraySize != 1 || d->MipLevels > 1) return nullptr;
+    if (d->Format != DXGI_FORMAT_B8G8R8A8_UNORM && d->Format != DXGI_FORMAT_B8G8R8A8_TYPELESS && d->Format != DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) return nullptr;
+    for (auto& t : targets)
+        if (d->Width == t.width && d->Height == t.height) return &t;
+    return nullptr;
 }
 
 void releaseGpu() {
@@ -88,62 +110,65 @@ void releaseGpu() {
     fence = nullptr; fenceValue = 0; gpuReady = false;
 }
 
-void adopt(ID3D12Device* dev, const D3D12_RESOURCE_DESC* desc, D3D12_RESOURCE_STATES state, REFIID riid, void** ppv, const char* how) {
-    if (!ppv || !*ppv || !matches(desc)) return;
+void adopt(ID3D12Device* dev, const D3D12_RESOURCE_DESC* desc, D3D12_RESOURCE_STATES state, void** ppv, const char* how) {
+    Target* t = matching(desc);
+    if (!ppv || !*ppv || !t) return;
     ID3D12Resource* resource = nullptr;
     if (FAILED(static_cast<IUnknown*>(*ppv)->QueryInterface(IID_PPV_ARGS(&resource)))) return;
     std::lock_guard<std::mutex> lock(m);
     if (device && device != dev) { releaseGpu(); queue = nullptr; }
-    if (target) target->Release();
-    target = resource;  // keep the reference from QueryInterface
-    targetFast = resource;
-    targetDesc = *desc;
-    targetState = state;
+    if (t->resource) t->resource->Release();
+    t->resource = resource;  // keep the reference from QueryInterface
+    t->fast = resource;
+    t->desc = *desc;
+    t->state = state;
     device = dev;
-    logf("stream: screen texture created via %s res=%p fmt=%d state=0x%x", how, resource, int(desc->Format), unsigned(state));
+    logf("stream: %s texture created via %s res=%p fmt=%d state=0x%x", t->name, how, resource, int(desc->Format), unsigned(state));
 }
 
 HRESULT STDMETHODCALLTYPE hookCommitted(ID3D12Device* d, const D3D12_HEAP_PROPERTIES* hp, D3D12_HEAP_FLAGS f,
     const D3D12_RESOURCE_DESC* desc, D3D12_RESOURCE_STATES s, const D3D12_CLEAR_VALUE* c, REFIID riid, void** ppv) {
     HRESULT hr = origCommitted(d, hp, f, desc, s, c, riid, ppv);
-    if (SUCCEEDED(hr) && matches(desc)) adopt(d, desc, s, riid, ppv, "CreateCommittedResource");
+    if (SUCCEEDED(hr)) adopt(d, desc, s, ppv, "CreateCommittedResource");
     return hr;
 }
 HRESULT STDMETHODCALLTYPE hookPlaced(ID3D12Device* d, ID3D12Heap* h, UINT64 o, const D3D12_RESOURCE_DESC* desc,
     D3D12_RESOURCE_STATES s, const D3D12_CLEAR_VALUE* c, REFIID riid, void** ppv) {
     HRESULT hr = origPlaced(d, h, o, desc, s, c, riid, ppv);
-    if (SUCCEEDED(hr) && matches(desc)) adopt(d, desc, s, riid, ppv, "CreatePlacedResource");
+    if (SUCCEEDED(hr)) adopt(d, desc, s, ppv, "CreatePlacedResource");
     return hr;
 }
 HRESULT STDMETHODCALLTYPE hookCommitted1(ID3D12Device* d, const D3D12_HEAP_PROPERTIES* hp, D3D12_HEAP_FLAGS f,
     const D3D12_RESOURCE_DESC* desc, D3D12_RESOURCE_STATES s, const D3D12_CLEAR_VALUE* c, ID3D12ProtectedResourceSession* p, REFIID riid, void** ppv) {
     HRESULT hr = origCommitted1(d, hp, f, desc, s, c, p, riid, ppv);
-    if (SUCCEEDED(hr) && matches(desc)) adopt(d, desc, s, riid, ppv, "CreateCommittedResource1");
+    if (SUCCEEDED(hr)) adopt(d, desc, s, ppv, "CreateCommittedResource1");
     return hr;
 }
 HRESULT STDMETHODCALLTYPE hookCommitted2(ID3D12Device* d, const D3D12_HEAP_PROPERTIES* hp, D3D12_HEAP_FLAGS f,
     const D3D12_RESOURCE_DESC* desc, D3D12_RESOURCE_STATES s, const D3D12_CLEAR_VALUE* c, ID3D12ProtectedResourceSession* p, REFIID riid, void** ppv) {
     HRESULT hr = origCommitted2(d, hp, f, desc, s, c, p, riid, ppv);
-    if (SUCCEEDED(hr) && matches(desc)) adopt(d, desc, s, riid, ppv, "CreateCommittedResource2");
+    if (SUCCEEDED(hr)) adopt(d, desc, s, ppv, "CreateCommittedResource2");
     return hr;
 }
 HRESULT STDMETHODCALLTYPE hookPlaced1(ID3D12Device* d, ID3D12Heap* h, UINT64 o, const D3D12_RESOURCE_DESC* desc,
     D3D12_RESOURCE_STATES s, const D3D12_CLEAR_VALUE* c, REFIID riid, void** ppv) {
     HRESULT hr = origPlaced1(d, h, o, desc, s, c, riid, ppv);
-    if (SUCCEEDED(hr) && matches(desc)) adopt(d, desc, s, riid, ppv, "CreatePlacedResource1");
+    if (SUCCEEDED(hr)) adopt(d, desc, s, ppv, "CreatePlacedResource1");
     return hr;
 }
 
-// Track the texture's state from the engine's own barriers so ours match.
+// Track each texture's state from the engine's own barriers so ours match.
 void STDMETHODCALLTYPE hookBarrier(ID3D12GraphicsCommandList* list, UINT n, const D3D12_RESOURCE_BARRIER* barriers) {
-    ID3D12Resource* t = targetFast.load(std::memory_order_relaxed);
-    if (t && !ownCall) {
-        for (UINT i = 0; i < n; i++) {
-            if (barriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION && barriers[i].Transition.pResource == t) {
+    if (!ownCall) {
+        for (auto& t : targets) {
+            ID3D12Resource* r = t.fast.load(std::memory_order_relaxed);
+            if (!r) continue;
+            for (UINT i = 0; i < n; i++) {
+                if (barriers[i].Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || barriers[i].Transition.pResource != r) continue;
                 std::lock_guard<std::mutex> lock(m);
-                if (target == t && targetState != barriers[i].Transition.StateAfter) {
-                    targetState = barriers[i].Transition.StateAfter;
-                    logf("stream: engine moved screen texture to state 0x%x", unsigned(targetState));
+                if (t.resource == r && t.state != barriers[i].Transition.StateAfter) {
+                    t.state = barriers[i].Transition.StateAfter;
+                    logf("stream: engine moved %s texture to state 0x%x", t.name, unsigned(t.state));
                 }
             }
         }
@@ -153,14 +178,11 @@ void STDMETHODCALLTYPE hookBarrier(ID3D12GraphicsCommandList* list, UINT n, cons
 
 bool createGpu() {  // caller holds m
     if (gpuReady) return true;
-    if (!device || !target) return false;
-    UINT64 total = 0;
-    device->GetCopyableFootprints(&targetDesc, 0, 1, 0, &footprint, nullptr, nullptr, &total);
-    if (footprint.Footprint.RowPitch < arcade::PITCH) { logf("stream: unexpected row pitch %u", footprint.Footprint.RowPitch); broken = true; return false; }
+    if (!device) return false;
     D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_UPLOAD};
     D3D12_RESOURCE_DESC buf{};
-    buf.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; buf.Width = total; buf.Height = 1; buf.DepthOrArraySize = 1;
-    buf.MipLevels = 1; buf.SampleDesc.Count = 1; buf.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    buf.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; buf.Width = UINT64(ROW_PITCH) * arcade::HEIGHT; buf.Height = 1;
+    buf.DepthOrArraySize = 1; buf.MipLevels = 1; buf.SampleDesc.Count = 1; buf.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     ownCall = true;
     bool ok = SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
     for (auto& s : slots) {
@@ -174,20 +196,23 @@ bool createGpu() {  // caller holds m
     ownCall = false;
     if (!ok) { logf("stream: failed to create upload resources"); releaseGpu(); broken = true; return false; }
     gpuReady = true;
-    logf("stream: upload path ready (%llu bytes x2, row pitch %u)", total, footprint.Footprint.RowPitch);
+    logf("stream: upload path ready (%llu bytes x2, row pitch %u)", buf.Width, ROW_PITCH);
     return true;
 }
 
 // Worker: copy the newest host frame into a free upload slot.
 void workerLoop() {
     LONG lastSerial = -1;
+    bool wasActive = false;
     while (running) {
         Sleep(2);
-        if (!visible || broken || !shared || shared->latestFrame == LONG(arcade::NO_FRAME)) continue;
+        bool active = anyActive();
+        if (active && !wasActive) lastSerial = -1;  // re-upload the current frame for a newly shown target
+        wasActive = active;
+        if (!active || broken || !shared || shared->latestFrame == LONG(arcade::NO_FRAME)) continue;
         LONG serial = shared->frameSerial;
         if (serial == lastSerial) continue;
         Slot* slot = nullptr;
-        UINT pitch = 0;
         {
             std::lock_guard<std::mutex> lock(m);
             if (!createGpu()) continue;
@@ -196,16 +221,11 @@ void workerLoop() {
                 if (s.state == SlotState::Free && done >= s.fenceValue) { slot = &s; break; }
             if (!slot) continue;
             slot->state = SlotState::Filling;
-            pitch = footprint.Footprint.RowPitch;
         }
         LONG index = shared->latestFrame;
         InterlockedExchange(&shared->readingFrame, index);
         bool ok = index >= 0 && index < LONG(arcade::FRAME_BUFFERS) && shared->latestFrame == index;
-        if (ok) {
-            const uint8_t* src = shared->frames[index];
-            for (UINT y = 0; y < arcade::HEIGHT; y++)
-                memcpy(slot->mapped + size_t(y) * pitch, src + size_t(y) * arcade::PITCH, arcade::PITCH);
-        }
+        if (ok) memcpy(slot->mapped, shared->frames[index], arcade::FRAME_BYTES);  // same pitch on both sides
         InterlockedExchange(&shared->readingFrame, LONG(arcade::NO_FRAME));
         std::lock_guard<std::mutex> lock(m);
         slot->serial = serial;
@@ -214,31 +234,40 @@ void workerLoop() {
     }
 }
 
+void transition(ID3D12GraphicsCommandList* list, ID3D12Resource* r, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+    if (from == to) return;
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = r;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    b.Transition.StateBefore = from;
+    b.Transition.StateAfter = to;
+    list->ResourceBarrier(1, &b);
+}
+
 void recordAndSubmit(ID3D12CommandQueue* q) {  // caller holds m
     Slot* ready = nullptr;
     for (auto& s : slots)
         if (s.state == SlotState::Ready && (!ready || s.serial - ready->serial > 0)) ready = &s;
-    if (!ready || FAILED(ready->allocator->Reset())) return;
+    if (!ready) return;
+    Target* live[TARGETS];
+    int count = 0;
+    for (auto& t : targets) if (t.active && t.resource) live[count++] = &t;
+    if (!count) return;
+    if (FAILED(ready->allocator->Reset())) return;
     ownCall = true;
     auto list = ready->list;
     list->Reset(ready->allocator, nullptr);
-    D3D12_RESOURCE_STATES before = targetState;
-    D3D12_RESOURCE_BARRIER b{};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = target;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    if (before != D3D12_RESOURCE_STATE_COPY_DEST) {
-        b.Transition.StateBefore = before; b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-        list->ResourceBarrier(1, &b);
-    }
-    D3D12_TEXTURE_COPY_LOCATION dst{target, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
-    dst.SubresourceIndex = 0;
-    D3D12_TEXTURE_COPY_LOCATION src{ready->upload, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
-    src.PlacedFootprint = footprint;
-    list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-    if (before != D3D12_RESOURCE_STATE_COPY_DEST) {
-        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST; b.Transition.StateAfter = before;
-        list->ResourceBarrier(1, &b);
+    for (int i = 0; i < count; i++) {
+        Target& t = *live[i];
+        transition(list, t.resource, t.state, D3D12_RESOURCE_STATE_COPY_DEST);
+        D3D12_TEXTURE_COPY_LOCATION dst{t.resource, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+        dst.SubresourceIndex = 0;
+        D3D12_TEXTURE_COPY_LOCATION src{ready->upload, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+        src.PlacedFootprint.Offset = 0;
+        src.PlacedFootprint.Footprint = {t.desc.Format, arcade::WIDTH, arcade::HEIGHT, 1, ROW_PITCH};
+        list->CopyTextureRegion(&dst, t.x, t.y, 0, &src, nullptr);
+        transition(list, t.resource, D3D12_RESOURCE_STATE_COPY_DEST, t.state);
     }
     bool closed = SUCCEEDED(list->Close());
     ownCall = false;
@@ -248,11 +277,13 @@ void recordAndSubmit(ID3D12CommandQueue* q) {  // caller holds m
     q->Signal(fence, ++fenceValue);
     ready->fenceValue = fenceValue;
     ready->state = SlotState::Free;
-    static UINT64 uploads = 0;
-    if (++uploads == 1 || uploads % 1800 == 0) logf("stream: %llu frames uploaded (state 0x%x)", uploads, unsigned(before));
+    for (int i = 0; i < count; i++) {
+        Target& t = *live[i];
+        if (++t.uploads == 1 || t.uploads % 1800 == 0) logf("stream: %s: %llu frames uploaded (state 0x%x)", t.name, t.uploads, unsigned(t.state));
+    }
 }
 
-// Pick the busiest direct queue on the texture's device: that is the frame queue.
+// Pick the busiest direct queue on the textures' device: that is the frame queue.
 void chooseQueue(ID3D12CommandQueue* q) {  // caller holds m
     static ID3D12CommandQueue* seen[8] = {};
     static unsigned counts[8] = {}, total = 0;
@@ -276,9 +307,9 @@ void chooseQueue(ID3D12CommandQueue* q) {  // caller holds m
 }
 
 void STDMETHODCALLTYPE hookExecute(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* lists) {
-    if (visible && !broken && targetFast.load(std::memory_order_relaxed) && !ownCall) {
+    if (!broken && !ownCall && anyActive()) {
         std::unique_lock<std::mutex> lock(m, std::try_to_lock);
-        if (lock.owns_lock() && target && gpuReady) {
+        if (lock.owns_lock() && gpuReady) {
             if (!queue) chooseQueue(q);
             if (q == queue) recordAndSubmit(q);
         }
@@ -341,8 +372,18 @@ bool install(arcade::Shared* s) {
 }
 
 void setVisible(bool v) {
-    if (visible.exchange(v) != v) logf("stream: page %s", v ? "visible, streaming" : "hidden, paused");
+    if (targets[TABLET].active.exchange(v) != v) logf("stream: page %s", v ? "visible, streaming" : "hidden, paused");
 }
+
+void setPosterActive(bool a) {
+    // Taking the lock waits out a submission in progress, so once this returns no copy
+    // into the poster texture is recorded (earlier ones are already on the game's queue,
+    // ahead of anything that could free it).
+    std::lock_guard<std::mutex> lock(m);
+    if (targets[POSTER].active.exchange(a) != a) logf("stream: poster %s", a ? "docked, streaming" : "undocked, stopped");
+}
+
+bool posterTextureReady() { return targets[POSTER].fast.load() != nullptr; }
 
 void shutdown() {
     running = false;
