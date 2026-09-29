@@ -39,6 +39,7 @@ struct Config {
     std::vector<std::wstring> movies; // video folders (arcade.ini movies=, ; separated)
     std::wstring windowMode;          // "desktop" (default) or "offscreen"
     std::wstring audioDevice;         // output device name fragments ('|' separated), "default" = Windows default
+    std::wstring lightGun;            // RetroArch light gun from poster shots: "touch" (default), "focus" or "off"
     int balatroPort = 55410, retroCmdPort = 55355, retroPadPort = 55400;
 };
 Config loadConfig();

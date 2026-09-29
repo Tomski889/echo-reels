@@ -79,6 +79,11 @@ window_mode=desktop
 ; where the apps' sound goes: output device name fragments separated by |, first match
 ; wins (default: the Link / Air Link headset). "default" = the Windows default device.
 audio_device=Oculus Virtual Audio|Meta Quest|Rift
+; light gun for RetroArch games (Duck Hunt style), from your shots on the docked poster:
+; touch: aims and fires without taking focus from Echo VR (default)
+; focus: gives RetroArch focus and clicks the mouse at the spot; focus comes back after a pause
+; off:   shots on RetroArch's picture do nothing
+light_gun=touch
 balatro_port=55410
 retroarch_command_port=55355
 retroarch_pad_port=55400

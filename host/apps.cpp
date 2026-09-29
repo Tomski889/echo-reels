@@ -28,6 +28,25 @@ BOOL CALLBACK findWindow(HWND hwnd, LPARAM param) {
     return FALSE;
 }
 
+// The light-gun overlay: one do-nothing button off screen (RetroArch's d3d11 driver needs an
+// overlay with a button and an image; this one is a transparent pixel).
+void writeGunOverlay(const std::wstring& dir) {
+    static const unsigned char PNG[] = {
+        0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x00,0x00,0x00,0x0d,0x49,0x48,0x44,0x52,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x01,
+        0x08,0x06,0x00,0x00,0x00,0x1f,0x15,0xc4,0x89,0x00,0x00,0x00,0x0d,0x49,0x44,0x41,0x54,0x78,0xda,0x63,0x60,0x60,0x60,0x60,
+        0x00,0x00,0x00,0x05,0x00,0x01,0x7a,0xa8,0x57,0x50,0x00,0x00,0x00,0x00,0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82};
+    FILE* f = nullptr;
+    if (!_wfopen_s(&f, (dir + L"\\lightgun_overlay.png").c_str(), L"wb") && f) {
+        fwrite(PNG, 1, sizeof(PNG), f);
+        fclose(f);
+    }
+    if (!_wfopen_s(&f, (dir + L"\\lightgun_overlay.cfg").c_str(), L"w") && f) {
+        fputs("overlays = 1\noverlay0_overlay = \"lightgun_overlay.png\"\noverlay0_full_screen = true\n"
+              "overlay0_normalized = true\noverlay0_descs = 1\noverlay0_desc0 = \"nul,-1.0,-1.0,rect,0.001,0.001\"\n", f);
+        fclose(f);
+    }
+}
+
 void writeRetroConfig(const Config& c, const std::wstring& path) {
     FILE* f = nullptr;
     if (_wfopen_s(&f, path.c_str(), L"w") || !f) return;
@@ -45,6 +64,21 @@ void writeRetroConfig(const Config& c, const std::wstring& path) {
         "log_verbosity = \"true\"\nlog_to_file = \"true\"\nlog_to_file_timestamp = \"false\"\nlog_dir = \"%ls\\logs\"\n"
         "frontend_log_level = \"1\"\nlibretro_log_level = \"1\"\n",
         c.retroCmdPort, c.retroPadPort, c.roms.c_str(), folderOf(c.retroarch).c_str());
+    // Light gun (lightgun.cpp): an invisible overlay whose only job is RetroArch's overlay light
+    // gun, which aims at a touch and pulls the trigger while it lasts, for every core and port
+    // (the "focus" mode's mouse click counts as that touch too). Written out every time, since
+    // RetroArch saves these settings into its own retroarch.cfg on exit.
+    bool gun = c.lightGun == L"touch" || c.lightGun == L"focus";
+    std::wstring overlay = c.dir + L"\\lightgun_overlay.cfg";
+    if (gun) writeGunOverlay(c.dir);
+    fprintf(f,
+        "input_overlay_enable = \"%s\"\ninput_overlay = \"%ls\"\ninput_overlay_opacity = \"0.000000\"\n"
+        "input_overlay_pointer_enable = \"%s\"\ninput_overlay_lightgun_trigger_on_touch = \"true\"\n"
+        "input_overlay_lightgun_trigger_delay = \"1\"\ninput_overlay_lightgun_port = \"-1\"\n"
+        "input_overlay_lightgun_allow_offscreen = \"true\"\ninput_overlay_lightgun_two_touch_input = \"0\"\n"
+        "input_overlay_hide_when_gamepad_connected = \"false\"\ninput_overlay_hide_in_menu = \"true\"\n"
+        "input_overlay_show_inputs = \"0\"\ninput_overlay_enable_autopreferred = \"false\"\n",
+        gun ? "true" : "false", gun ? overlay.c_str() : L"", gun ? "true" : "false");
     fclose(f);
 }
 
@@ -172,7 +206,7 @@ bool Session::launch(AppId id, const std::wstring& target, double startSeconds) 
     CloseHandle(pi.hThread);
     process_ = pi.hProcess;
     pid_ = pi.dwProcessId;
-    started_ = GetTickCount64();
+    started_ = lastWindow_ = GetTickCount64();
     quitAt_ = 0;
     std::fill(std::begin(padState_), std::end(padState_), false);
     hostLog("launched pid=%lu: %ls", pid_, redact(cmd).c_str());
@@ -192,7 +226,7 @@ void Session::poll() {
         return;
     }
     if (quitAt_ && GetTickCount64() - quitAt_ > 4000) { hostLog("app did not quit in time; terminating"); kill(); return; }
-    if (window_ && !IsWindow(window_)) { window_ = nullptr; capture_.stop(); }
+    if (window_ && !IsWindow(window_)) { window_ = nullptr; capture_.stop(); lastWindow_ = GetTickCount64(); }
     Rect r = contentRect();
     int x = config_.windowMode == L"offscreen" ? -8000 : 0;
     if (window_) {
