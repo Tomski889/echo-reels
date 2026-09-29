@@ -36,6 +36,15 @@ int main() {
     // Frame pixels to probe, and the mesh UV they sit at (inverse of toPixel).
     const int probes[][2] = {{512, 287}, {40, 40}, {980, 530}, {100, 500}};
     for (auto& info : POSTERS) {
+        if (!hasFace(info.mesh)) {  // dock only: never touched or hit
+            dock = Dock{};
+            dock.active = true;
+            dock.mesh = info.mesh;
+            int x, y;
+            float metres;
+            CHECK(!contact(Vec{}, false, x, y) && !rayHit(Vec{}, Vec{0, 0, 1}, x, y, metres), "poster %016llx without a face was hit", info.actor);
+            continue;
+        }
         dock = Dock{};
         dock.active = true;
         dock.mesh = info.mesh;

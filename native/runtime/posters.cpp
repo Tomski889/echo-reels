@@ -164,20 +164,32 @@ U lastTick = 0;                 // the touch-button Update last drove DOCK
 std::set<void*> systems;        // live poster systems (from start to destructor)
 std::set<void*> described;      // logged once each
 
-// Which POSTERS entry a poster-system key is (by the actor's level name), or -1.
-int posterOf(void* gs, U handle) {
-    auto it = table.find(handle);  // in case the key is the name itself
-    if (it != table.end()) return int(it->second);
+// A poster-system key's actor name, as the engine names it (OverrideTexture's messages):
+// gamespace +0x370 -> the +0xb8 table at the handle's low 16 bits, else (-1 there) +0x80.
+U nameOf(void* gs, U handle) {
     P names = at<P>(gs, 0x370);
-    if (!names) return -1;
+    if (!names) return NONE;
     size_t index = size_t(handle & 0xffff);
     for (size_t list : {size_t(0xb8), size_t(0x80)}) {
         P a = at<P>(names, list);
-        if (!a) continue;
-        it = table.find(at<U>(a, index * 8));
-        if (it != table.end()) return int(it->second);
+        U name = a ? at<U>(a, index * 8) : NONE;
+        if (name != NONE) return name;
     }
-    return -1;
+    return NONE;
+}
+
+// Which POSTERS entry a poster-system key is, or -1.
+int posterOf(void* gs, U handle) {
+    auto it = table.find(nameOf(gs, handle));
+    return it == table.end() ? -1 : int(it->second);
+}
+
+bool hasFace(unsigned mesh) { return mesh != POSTER_NO_MESH; }
+
+// A poster's middle in the world: its face's middle, or its origin when it has no face map.
+Vec centerOf(const PosterInfo& info, const Xform& space) {
+    Xform level{{info.rot[0], info.rot[1], info.rot[2], info.rot[3]}, {info.pos[0], info.pos[1], info.pos[2]}, info.scale[0]};
+    return space.apply(level.apply(hasFace(info.mesh) ? meshes[info.mesh].center : Vec{}));
 }
 
 void answer(LONG state, const char* fmt, ...) {
@@ -271,8 +283,7 @@ void handleRequest(U now) {
             int which = posterOf(gs, at<U>(keys, size_t(i) * 16));
             if (which < 0) continue;
             const PosterInfo& info = POSTERS[which];
-            Xform level{{info.rot[0], info.rot[1], info.rot[2], info.rot[3]}, {info.pos[0], info.pos[1], info.pos[2]}, info.scale[0]};
-            float d = length(space.apply(level.apply(meshes[info.mesh].center)) - player);
+            float d = length(centerOf(info, space) - player);
             if (d < bestDistance) { bestDistance = d; bestCs = cs; best = i; bestPlayer = player; bestSpace = space; }
         }
     }
@@ -306,21 +317,34 @@ void handleRequest(U now) {
     d.active = true;
     d.lastSeen = now;
     dock = d;
-    Vec center = d.space.apply(d.level.apply(meshes[d.mesh].center));
-    logf("posters: docked on %016llx (system %p slot %u, was %016llx/%016llx) at %.2f %.2f %.2f; you at %.2f %.2f %.2f; texture %s",
+    Vec center = centerOf(info, d.space);
+    logf("posters: docked on %016llx (system %p slot %u, was %016llx/%016llx) at %.2f %.2f %.2f; you at %.2f %.2f %.2f; texture %s%s",
          info.actor, cs, best, d.savedName, d.savedKey, center.x, center.y, center.z, bestPlayer.x, bestPlayer.y, bestPlayer.z,
-         stream::posterTextureReady() ? "ready" : "NOT CREATED YET");
+         stream::posterTextureReady() ? "ready" : "NOT CREATED YET", hasFace(d.mesh) ? "" : "; no face map (no touch or shots)");
     stream::setPosterActive(true);
-    answer(arcade::Docked, "Docked on the nearest poster (%.1f m away). Touch it, or shoot it in combat.", bestDistance);
+    if (hasFace(d.mesh))
+        answer(arcade::Docked, "Docked on the nearest poster (%.1f m away). Touch it, or shoot it in combat.", bestDistance);
+    else
+        answer(arcade::Docked, "Docked on the nearest poster (%.1f m away). This one has no touch or shots yet: use the tablet.", bestDistance);
 }
 
 void describe(void* cs) {
+    void* gs = at<void*>(cs, 0x80);
     unsigned count = at<unsigned short>(cs, 0xfc), known = 0;
     P keys = at<P>(cs, 0x108);
-    for (unsigned i = 0; i < count && keys; i++) known += posterOf(at<void*>(cs, 0x80), at<U>(keys, size_t(i) * 16)) >= 0 ? 1 : 0;
-    Xform space = gamespaceXform(at<void*>(cs, 0x80));
+    for (unsigned i = 0; i < count && keys; i++) known += posterOf(gs, at<U>(keys, size_t(i) * 16)) >= 0 ? 1 : 0;
+    Xform space = gamespaceXform(gs);
     logf("posters: poster system %p (gamespace %p at %.2f %.2f %.2f x%.2f): %u posters, %u can dock",
-         cs, at<void*>(cs, 0x80), space.t.x, space.t.y, space.t.z, space.s, count, known);
+         cs, gs, space.t.x, space.t.y, space.t.z, space.s, count, known);
+    // Each slot's names in both tables (to check the lookup against what the game shows).
+    P names = at<P>(gs, 0x370);
+    for (unsigned i = 0; i < count && keys && names; i++) {
+        U handle = at<U>(keys, size_t(i) * 16);
+        size_t index = size_t(handle & 0xffff);
+        P b8 = at<P>(names, 0xb8), n80 = at<P>(names, 0x80);
+        logf("posters:   slot %u handle %016llx: +0xb8 %016llx, +0x80 %016llx -> %s", i, handle,
+             b8 ? at<U>(b8, index * 8) : NONE, n80 ? at<U>(n80, index * 8) : NONE, posterOf(gs, handle) >= 0 ? "known" : "unknown");
+    }
 }
 
 // Keeps the arcade on the docked poster.
@@ -396,6 +420,7 @@ void* destroy(void* cs, unsigned flags) {
 
 // Where a fingertip touches the docked poster: pixel, or false when not touching.
 bool contact(Vec tip, bool wasDown, int& x, int& y) {
+    if (!hasFace(dock.mesh)) return false;
     Vec local = dock.level.unapply(dock.space.unapply(tip));
     float scale = dock.level.s * dock.space.s;
     float best = 1e9f, bestSigned = 0, u = 0, v = 0;
@@ -463,6 +488,7 @@ void afterButton(void* cs, U now) {
 
 // Where a ray (world space) meets the docked poster's picture: pixel and distance in metres.
 bool rayHit(Vec worldOrigin, Vec worldDir, int& x, int& y, float& metres) {
+    if (!hasFace(dock.mesh)) return false;
     Vec o = dock.level.unapply(dock.space.unapply(worldOrigin));
     Vec d = dock.level.rotate(dock.space.rotate(worldDir, true), true);
     float bestT = 1e9f, u = 0, v = 0;
@@ -486,7 +512,7 @@ bool rayHit(Vec worldOrigin, Vec worldDir, int& x, int& y, float& metres) {
 
 // Light gun: a local shot's ray against the docked poster's face.
 void afterFire(void* cs, unsigned handle) {
-    if (!dock.active) return;
+    if (!dock.active || !hasFace(dock.mesh)) return;
     P bullet = at<P>(cs, 0xf8) + size_t(at<unsigned short>(at<P>(cs, 0xc8), size_t(handle & 0xffff) * 4)) * BULLET_STRIDE;
     Vec origin = at<Vec>(bullet, 0xf8), dir = at<Vec>(bullet, 0x104);
     if (!finite(origin) || !finite(dir) || length(dir) < .5f) return;
@@ -510,8 +536,7 @@ void afterFire(void* cs, unsigned handle) {
             int which = posterOf(dock.gs, at<U>(keys, size_t(i) * 16));
             if (which < 0) continue;
             const PosterInfo& info = POSTERS[which];
-            Xform level{{info.rot[0], info.rot[1], info.rot[2], info.rot[3]}, {info.pos[0], info.pos[1], info.pos[2]}, info.scale[0]};
-            Vec c = dock.space.apply(level.apply(meshes[info.mesh].center)) - worldOrigin;
+            Vec c = centerOf(info, dock.space) - worldOrigin;
             float along = std::max(0.f, dot(c, unit)), d = length(c - unit * along);
             if (d < closest) { closest = d; nearActor = info.actor; }
         }

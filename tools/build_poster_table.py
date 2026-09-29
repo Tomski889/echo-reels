@@ -27,6 +27,7 @@ POSTER_MODEL = 0x80011e8d2e3d410e      # the instance-model component every post
 FACE_U = (0.0155, 0.8775)              # mesh UVs of the picture face (all poster meshes)
 FACE_V = (0.0155, 0.4865)
 TRANSFORM_STRIDE = 0xb0
+NO_MESH = 0xffffffff                   # PosterInfo.mesh of a poster without a face map
 
 
 def records(blob, stride=None):
@@ -101,7 +102,7 @@ def upright(tris):
 def build():
     manifest = P.Manifest(MID)
     poster_type = P.typesym('CR15NetDynamicPosterCR')
-    meshes, mesh_index, posters, skipped = [], {}, {}, set()
+    meshes, mesh_index, posters, skipped, display_only = [], {}, {}, set(), set()
     for level, _, _ in manifest.by_type(poster_type):
         rows = records(manifest.get(poster_type, level))
         transforms = records(manifest.get(P.typesym('CTransformCR'), level), TRANSFORM_STRIDE)
@@ -118,7 +119,10 @@ def build():
                 raise SystemExit(f'Poster {actor:016x} has a parent transform; not supported')
             if resource not in mesh_index:
                 tris = face_triangles(manifest, resource)
-                if not tris or not upright(tris):
+                if not tris:  # face not found (other vertex layouts): dock only, no touch or shots
+                    display_only.add(resource)
+                    mesh_index[resource] = NO_MESH
+                elif not upright(tris):
                     skipped.add(resource)
                     mesh_index[resource] = None
                 else:
@@ -139,6 +143,8 @@ def build():
              f'constexpr unsigned POSTER_X0 = {POSTER_X0}, POSTER_Y0 = {POSTER_Y0}, POSTER_FRAME_W = {TEX_W}, POSTER_FRAME_H = {TEX_H};',
              '', 'struct PosterTri { float p[3][3]; float uv[3][2]; };',
              'struct PosterMesh { const PosterTri* tris; unsigned count; };',
+             '// mesh = POSTER_NO_MESH: the face was not found; the poster can show the arcade but has no touch or shots.',
+             f'constexpr unsigned POSTER_NO_MESH = 0x{NO_MESH:x};',
              'struct PosterInfo { uint64_t actor; unsigned mesh; float pos[3], rot[4], scale[3]; };', '']
     for i, (resource, tris) in enumerate(meshes):
         lines.append(f'// model {resource:016x}: {len(tris)} face triangles')
@@ -157,6 +163,7 @@ def build():
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text('\n'.join(lines) + '\n')
     print(f'Poster table: {len(posters)} posters, {len(meshes)} meshes'
+          + (f' (dock only, no face found: {", ".join(f"{r:016x}" for r in display_only)})' if display_only else '')
           + (f' (left out meshes {", ".join(f"{r:016x}" for r in skipped)})' if skipped else '') + f' -> {OUT}')
 
 
