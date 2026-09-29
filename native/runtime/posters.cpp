@@ -46,9 +46,10 @@ template <class T> T& at(void* p, size_t n) { return *reinterpret_cast<T*>(stati
 constexpr U NONE = ~U(0);
 
 constexpr unsigned RVA_START = 0xd00050, RVA_DESTROY = 0xca3740, RVA_OVERRIDE = 0xd20410, RVA_FALLBACK = 0xcd9430,
-                   RVA_FIRE = 0xce2020;
+                   RVA_FIRE = 0xce2020, RVA_FIND = 0x302780;
 struct Signature { unsigned rva; unsigned char bytes[16]; };
 constexpr Signature SIGNATURES[] = {
+    {RVA_FIND, {0x48,0x89,0x5c,0x24,0x08,0x4c,0x89,0x44,0x24,0x18,0x48,0x89,0x54,0x24,0x10,0x55}},
     {RVA_START, {0x40,0x53,0x48,0x83,0xec,0x40,0x48,0x8b,0xd9,0xe8,0x32,0xe0,0x3c,0xff,0x85,0xc0}},
     {RVA_DESTROY, {0x48,0x89,0x4c,0x24,0x08,0x53,0x56,0x57,0x48,0x83,0xec,0x20,0x8b,0xf2,0x48,0x8b}},
     {RVA_OVERRIDE, {0x48,0x89,0x5c,0x24,0x18,0x55,0x56,0x57,0x48,0x83,0xec,0x40,0x48,0x8b,0x81,0xb8}},
@@ -62,6 +63,11 @@ using Destroy = void* (*)(void*, unsigned);
 using Override = int (*)(void*, void*, void*, U);
 using Fallback = void (*)(void*, void*, void*, U);
 using Fire = U (*)(void*, unsigned, void*, float, void*, void*, int, int);
+// 0x140302780 FindComponent(out, gamespace, actor handle, component name): asks each component
+// system for that actor's instance (OverrideTexture finds the poster's model this way).
+struct FoundComponent { void* system = nullptr; unsigned index = 0xffff; unsigned char pad[4] = {}; };
+using Find = void (*)(FoundComponent*, void*, U, U);
+Find findComponent;
 Start startOriginal;
 Destroy destroyOriginal;
 Override overrideTexture;
@@ -178,10 +184,84 @@ U nameOf(void* gs, U handle) {
     return NONE;
 }
 
-// Which POSTERS entry a poster-system key is, or -1.
-int posterOf(void* gs, U handle) {
-    auto it = table.find(nameOf(gs, handle));
-    return it == table.end() ? -1 : int(it->second);
+bool readable(const void* p, size_t n) {
+    MEMORY_BASIC_INFORMATION m;
+    if (reinterpret_cast<uintptr_t>(p) < 0x10000 || reinterpret_cast<uintptr_t>(p) > 0x7fffffffffffull) return false;
+    if (!VirtualQuery(p, &m, sizeof(m)) || m.State != MEM_COMMIT || (m.Protect & (PAGE_GUARD | PAGE_NOACCESS))) return false;
+    if (!(m.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) return false;
+    return static_cast<const unsigned char*>(p) + n <= static_cast<unsigned char*>(m.BaseAddress) + m.RegionSize;
+}
+
+bool safeFind(FoundComponent* f, void* gs, U handle, U component) {
+    __try { findComponent(f, gs, handle, component); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// The render record of a poster slot's model, found the way OverrideTexture finds the model
+// (FindComponent with the handle and the poster's model component, +0x50), then as the
+// texture apply (0x1403424d0) indexes it: +0xd0 u16 [index * 4] -> j, +0x100 u16
+// [j * 16 + 4] -> k, record k of 0x88 bytes at +0x400.
+P modelRecord(void* cs, unsigned slot) {
+    void* gs = at<void*>(cs, 0x80);
+    P item = at<P>(cs, 0x100) + size_t(slot) * POSTER_STRIDE;
+    FoundComponent f;
+    if (!safeFind(&f, gs, at<U>(at<P>(cs, 0x108), size_t(slot) * 16), at<U>(item, 0x50))) return nullptr;
+    P ms = static_cast<P>(f.system);
+    if (!ms || f.index == 0xffff || !readable(ms, 0x408)) return nullptr;
+    P a = at<P>(ms, 0xd0), b = at<P>(ms, 0x100), records = at<P>(ms, 0x400);
+    if (!readable(a + size_t(f.index) * 4, 2)) return nullptr;
+    unsigned j = at<unsigned short>(a, size_t(f.index) * 4);
+    if (!readable(b + size_t(j) * 16 + 4, 2)) return nullptr;
+    unsigned k = at<unsigned short>(b, size_t(j) * 16 + 4);
+    P rec = records + size_t(k) * 0x88;
+    return readable(rec, 0x88) ? rec : nullptr;
+}
+
+// Which POSTERS entry's position is in a render record (as x, y, z in a row, or a matrix
+// column 16 bytes apart), or -1. Sets `where` to the byte offset of x.
+int posterAt(P rec, int& where) {
+    const float* f = reinterpret_cast<const float*>(rec);
+    constexpr int N = 0x88 / 4;
+    for (unsigned i = 0; i < sizeof(POSTERS) / sizeof(POSTERS[0]); i++) {
+        const float* p = POSTERS[i].pos;
+        for (int o = 0; o < N; o++)
+            for (int step : {1, 4}) {
+                if (o + 2 * step >= N) continue;
+                if (std::fabs(f[o] - p[0]) < .01f && std::fabs(f[o + step] - p[1]) < .01f && std::fabs(f[o + 2 * step] - p[2]) < .01f) {
+                    where = o * 4 + (step == 4 ? 0x1000 : 0);
+                    return int(i);
+                }
+            }
+    }
+    return -1;
+}
+
+std::map<std::pair<void*, unsigned>, int> slotPoster;  // (poster system, slot) -> POSTERS index or -1
+
+// Which POSTERS entry a poster slot is, or -1: the poster at its model's rendered position;
+// else by the gamespace name tables (they name the combat lobby's slots wrongly).
+int posterOf(void* cs, unsigned slot) {
+    auto cached = slotPoster.find({cs, slot});
+    if (cached != slotPoster.end()) return cached->second;
+    void* gs = at<void*>(cs, 0x80);
+    U handle = at<U>(at<P>(cs, 0x108), size_t(slot) * 16);
+    auto named = table.find(nameOf(gs, handle));
+    int byName = named == table.end() ? -1 : int(named->second), where = -1;
+    P rec = modelRecord(cs, slot);
+    int byModel = rec ? posterAt(rec, where) : -1;
+    int which = byModel >= 0 ? byModel : byName;
+    slotPoster[{cs, slot}] = which;
+    logf("posters:   slot %u handle %016llx: model %s -> %016llx (at %x), name table -> %016llx; using %s", slot, handle,
+         rec ? "record" : "NOT FOUND", byModel >= 0 ? POSTERS[byModel].actor : NONE, where,
+         byName >= 0 ? POSTERS[byName].actor : nameOf(gs, handle), byModel >= 0 ? "the model" : "the name table");
+    if (rec && byModel < 0) {
+        const float* f = reinterpret_cast<const float*>(rec);
+        char line[512];
+        int n = 0;
+        for (int i = 0; i < 0x88 / 4 && n < int(sizeof(line)) - 16; i++) n += snprintf(line + n, sizeof(line) - n, " %.3f", f[i]);
+        logf("posters:     record floats:%s", line);
+    }
+    return which;
 }
 
 bool hasFace(unsigned mesh) { return mesh != POSTER_NO_MESH; }
@@ -280,7 +360,7 @@ void handleRequest(U now) {
         unsigned count = at<unsigned short>(cs, 0xfc);
         P keys = at<P>(cs, 0x108);
         for (unsigned i = 0; i < count && keys; i++) {
-            int which = posterOf(gs, at<U>(keys, size_t(i) * 16));
+            int which = posterOf(cs, i);
             // Posters without a face map are never docked: on the combat-lobby set piece the
             // arcade texture drew blank and a shot at it crashed the GPU.
             if (which < 0 || !hasFace(POSTERS[which].mesh)) continue;
@@ -299,7 +379,7 @@ void handleRequest(U now) {
     void* cs = bestCs;
     void* gs = at<void*>(cs, 0x80);
     P keys = at<P>(cs, 0x108);
-    const PosterInfo& info = POSTERS[posterOf(gs, at<U>(keys, size_t(best) * 16))];
+    const PosterInfo& info = POSTERS[posterOf(cs, best)];
     P item = at<P>(cs, 0x100) + size_t(best) * POSTER_STRIDE;
     Dock d;
     d.cs = cs; d.gs = gs; d.index = best; d.actor = info.actor; d.handle = at<U>(keys, size_t(best) * 16); d.mesh = info.mesh;
@@ -342,19 +422,10 @@ void describe(void* cs) {
     void* gs = at<void*>(cs, 0x80);
     unsigned count = at<unsigned short>(cs, 0xfc), known = 0;
     P keys = at<P>(cs, 0x108);
-    for (unsigned i = 0; i < count && keys; i++) known += posterOf(gs, at<U>(keys, size_t(i) * 16)) >= 0 ? 1 : 0;
+    for (unsigned i = 0; i < count && keys; i++) known += posterOf(cs, i) >= 0 ? 1 : 0;
     Xform space = gamespaceXform(gs);
     logf("posters: poster system %p (gamespace %p at %.2f %.2f %.2f x%.2f): %u posters, %u can dock",
-         cs, gs, space.t.x, space.t.y, space.t.z, space.s, count, known);
-    // Each slot's names in both tables (to check the lookup against what the game shows).
-    P names = at<P>(gs, 0x370);
-    for (unsigned i = 0; i < count && keys && names; i++) {
-        U handle = at<U>(keys, size_t(i) * 16);
-        size_t index = size_t(handle & 0xffff);
-        P b8 = at<P>(names, 0xb8), n80 = at<P>(names, 0x80);
-        logf("posters:   slot %u handle %016llx: +0xb8 %016llx, +0x80 %016llx -> %s", i, handle,
-             b8 ? at<U>(b8, index * 8) : NONE, n80 ? at<U>(n80, index * 8) : NONE, posterOf(gs, handle) >= 0 ? "known" : "unknown");
-    }
+         cs, gs, space.t.x, space.t.y, space.t.z, space.s, count, known);  // posterOf logged each slot
 }
 
 // Keeps the arcade on the docked poster.
@@ -418,6 +489,7 @@ void* destroy(void* cs, unsigned flags) {
         std::lock_guard<std::mutex> lock(mutex);
         systems.erase(cs);
         described.erase(cs);
+        for (auto it = slotPoster.begin(); it != slotPoster.end();) it = it->first.first == cs ? slotPoster.erase(it) : std::next(it);
         if (dock.active && dock.cs == cs) {
             stream::setPosterActive(false);  // before the level frees anything
             releaseFingers();
@@ -552,7 +624,7 @@ void afterFire(void* cs, unsigned handle) {
         unsigned count = at<unsigned short>(dock.cs, 0xfc);
         P keys = at<P>(dock.cs, 0x108);
         for (unsigned i = 0; i < count && keys; i++) {
-            int which = posterOf(dock.gs, at<U>(keys, size_t(i) * 16));
+            int which = posterOf(dock.cs, i);
             if (which < 0) continue;
             const PosterInfo& info = POSTERS[which];
             Vec c = centerOf(info, dock.space) - worldOrigin;
@@ -623,6 +695,7 @@ bool install(unsigned char* exe, arcade::Shared* s) {
     buildGeometry();
     overrideTexture = reinterpret_cast<Override>(exe + RVA_OVERRIDE);
     fallbackArt = reinterpret_cast<Fallback>(exe + RVA_FALLBACK);
+    findComponent = reinterpret_cast<Find>(exe + RVA_FIND);
     handled = shared->dockSerial;  // ignore requests from before this session
     shared->dockDone = handled;
     shared->dockState = arcade::Undocked;
