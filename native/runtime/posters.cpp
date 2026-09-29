@@ -16,7 +16,7 @@
 //     on the poster model. 0x140cd9430 FallbackArt(cs, key, poster, slice): the level's own
 //     art back on the model. 0x140ca3740 destructor.
 //   Touch buttons (CR15ButtonInteractCS): after its update, +0x1f0 / +0x200 hold the two
-//     fingertips in world space as (x, y, z, 1).
+//     fingertips in world space as (x, y, z, radius); the engine writes radius 0.0085 (8.5 mm).
 //   CR15NetBulletCS 0x140ce2020 Fire(cs, bullet, info, speed, muzzle, dir, fromNetwork, flag):
 //     bullet = +0xf8 + 0x298 * u16 at (+0xc8 + 4 * handle); its +0xf8 position and +0x104
 //     direction are set by Fire.
@@ -423,9 +423,15 @@ void afterButton(void* cs, U now) {
     for (int i = 0; i < 2; i++) {
         const float* f = reinterpret_cast<const float*>(static_cast<P>(cs) + (i ? 0x200 : 0x1f0));
         h.tip[i] = {f[0], f[1], f[2]};
-        h.valid[i] = f[3] == 1.f && finite(h.tip[i]) && (f[0] != 0 || f[1] != 0 || f[2] != 0);
+        h.valid[i] = f[3] > 0 && f[3] < .1f && finite(h.tip[i]) && (f[0] != 0 || f[1] != 0 || f[2] != 0);
     }
     if (!h.valid[0] && !h.valid[1]) return;
+    if (hands.find(cs) == hands.end()) {
+        static int logged = 0;
+        if (logged++ < 8)
+            logf("posters: hands from touch system %p (gamespace %p): %.2f %.2f %.2f / %.2f %.2f %.2f", cs, h.gs,
+                 h.tip[0].x, h.tip[0].y, h.tip[0].z, h.tip[1].x, h.tip[1].y, h.tip[1].z);
+    }
     hands[cs] = h;
     for (auto it = hands.begin(); it != hands.end();) it = now - it->second.tick > 5000 ? hands.erase(it) : std::next(it);
     if (!dock.active) return;
