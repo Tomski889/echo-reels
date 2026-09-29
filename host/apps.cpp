@@ -28,8 +28,8 @@ BOOL CALLBACK findWindow(HWND hwnd, LPARAM param) {
     return FALSE;
 }
 
-// The light-gun overlay: one do-nothing button off screen (RetroArch's d3d11 driver needs an
-// overlay with a button and an image; this one is a transparent pixel).
+// The light-gun overlay: invisible buttons for the gun's own buttons (see GunButton), plus a
+// transparent pixel for an image (RetroArch's d3d11 driver needs one).
 void writeGunOverlay(const std::wstring& dir) {
     static const unsigned char PNG[] = {
         0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x00,0x00,0x00,0x0d,0x49,0x48,0x44,0x52,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x01,
@@ -41,8 +41,12 @@ void writeGunOverlay(const std::wstring& dir) {
         fclose(f);
     }
     if (!_wfopen_s(&f, (dir + L"\\lightgun_overlay.cfg").c_str(), L"w") && f) {
-        fputs("overlays = 1\noverlay0_overlay = \"lightgun_overlay.png\"\noverlay0_full_screen = true\n"
-              "overlay0_normalized = true\noverlay0_descs = 1\noverlay0_desc0 = \"nul,-1.0,-1.0,rect,0.001,0.001\"\n", f);
+        static const char* const NAMES[GunButtonCount] = {"gun_aux_a", "gun_aux_b", "gun_aux_c", "gun_start", "gun_select"};
+        fprintf(f, "overlays = 1\noverlay0_overlay = \"lightgun_overlay.png\"\noverlay0_full_screen = true\n"
+                   "overlay0_normalized = true\noverlay0_descs = %d\n", int(GunButtonCount));
+        for (int b = 0; b < GunButtonCount; b++)
+            fprintf(f, "overlay0_desc%d = \"%s,%.4f,%.4f,rect,%.4f,%.4f\"\n", b, NAMES[b], gunButtonX(b), GUN_BUTTON_Y,
+                    GUN_BUTTON_RANGE, GUN_BUTTON_RANGE);
         fclose(f);
     }
 }
@@ -76,7 +80,7 @@ void writeRetroConfig(const Config& c, const std::wstring& path) {
         "input_overlay_pointer_enable = \"%s\"\ninput_overlay_lightgun_trigger_on_touch = \"true\"\n"
         "input_overlay_lightgun_trigger_delay = \"1\"\ninput_overlay_lightgun_port = \"-1\"\n"
         "input_overlay_lightgun_allow_offscreen = \"true\"\ninput_overlay_lightgun_two_touch_input = \"0\"\n"
-        "input_overlay_hide_when_gamepad_connected = \"false\"\ninput_overlay_hide_in_menu = \"true\"\n"
+        "input_overlay_hide_when_gamepad_connected = \"false\"\ninput_overlay_hide_in_menu = \"false\"\n"
         "input_overlay_show_inputs = \"0\"\ninput_overlay_enable_autopreferred = \"false\"\n",
         gun ? "true" : "false", gun ? overlay.c_str() : L"", gun ? "true" : "false");
     fclose(f);
