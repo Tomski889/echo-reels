@@ -50,6 +50,10 @@ int main() {
         dock.mesh = info.mesh;
         dock.level = Xform{{info.rot[0], info.rot[1], info.rot[2], info.rot[3]}, {info.pos[0], info.pos[1], info.pos[2]}, info.scale[0]};
         dock.space = Xform{{0, 0, 0.3826834f, 0.9238795f}, {5, -2, 30}, 1.5f};  // any gamespace placement must work
+        // Plus a same-model poster 100 m up (off every test ray): it takes touches and shots too,
+        // but must not steal them.
+        dock.faces = {dock.level, dock.level};
+        dock.faces[1].t = dock.faces[1].t + Vec{0, 100, 0};
         for (auto& px : probes) {
             float u = (px[0] + .5f + POSTER_X0) / POSTER_TEX_W, v = (px[1] + .5f + POSTER_Y0) / (2.f * POSTER_TEX_H);
             Vec local, n;
@@ -71,6 +75,17 @@ int main() {
                   "poster %016llx shot %d,%d -> %d %d,%d (%.2f m)", info.actor, px[0], px[1], int(hit), x, y, metres);
             // Shooting away from the poster misses.
             CHECK(!rayHit(from, dir * -1.f, x, y, metres), "poster %016llx hit by a shot fired away from it", info.actor);
+            // The same spot on the other poster lands on the same pixel.
+            Vec world2 = dock.space.apply(dock.faces[1].apply(local));
+            Vec normal2 = dock.space.rotate(dock.faces[1].rotate(n));
+            on = contact(world2 + normal2 * .005f, false, x, y);
+            CHECK(on && std::abs(x - px[0]) <= 1 && std::abs(y - px[1]) <= 1, "poster %016llx second face touch %d,%d -> %d %d,%d", info.actor, px[0], px[1], int(on), x, y);
+            Vec from2 = world2 + normal2 * 6.f;
+            Vec dir2 = world2 - from2;
+            dir2 = dir2 * (1 / length(dir2));
+            hit = rayHit(from2, dir2, x, y, metres);
+            CHECK(hit && std::abs(x - px[0]) <= 1 && std::abs(y - px[1]) <= 1 && std::fabs(metres - 6.f) < .02f,
+                  "poster %016llx second face shot %d,%d -> %d %d,%d (%.2f m)", info.actor, px[0], px[1], int(hit), x, y, metres);
             checked++;
         }
     }
