@@ -1,12 +1,13 @@
 #pragma once
 #include "host.h"
 #include "media.h"
+#include "reels.h"
 #include <winsock2.h>
 #include <condition_variable>
 #include <deque>
 #include <thread>
 
-enum class AppId { BalatroSteam, DuckHunt, RetroArch, Doom, Movies, Plex };
+enum class AppId { BalatroSteam, DuckHunt, RetroArch, Doom, Movies, Plex, Reels };
 
 struct AppInfo {
     AppId id;
@@ -45,6 +46,7 @@ public:
     void command(const char* text);                    // RetroArch network command
     void analog(float x, float y);                     // left stick, -1..1
     MpvControl& mpv() { return mpv_; }
+    CdpInput& reels() { return reels_; }
 
 private:
     void send(int port, const void* data, int size);
@@ -57,6 +59,7 @@ private:
     bool padState_[PadCount] = {};
     int16_t stick_[2] = {};
     MpvControl mpv_;
+    CdpInput reels_;
     SOCKET udp_ = INVALID_SOCKET;
     WindowCapture capture_;
 };

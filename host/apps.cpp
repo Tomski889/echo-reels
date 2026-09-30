@@ -4,6 +4,9 @@
 #include <cstdio>
 #include <thread>
 #include <algorithm>
+#include <map>
+#include <set>
+#include <tlhelp32.h>
 
 namespace {
 
@@ -88,6 +91,37 @@ void writeRetroConfig(const Config& c, const std::wstring& path) {
 
 }  // namespace
 
+// Routes `root` and all its descendant processes to `audio`, retrying each until it is accepted,
+// until `root` exits. For browsers, whose sound comes from a child process started on demand.
+static void routeProcessTree(DWORD root, AudioTarget audio) {
+    (void)CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    HANDLE rootProcess = OpenProcess(SYNCHRONIZE, FALSE, root);
+    std::set<DWORD> routed;
+    for (int tick = 0; rootProcess && WaitForSingleObject(rootProcess, tick ? 500 : 50) == WAIT_TIMEOUT; tick++) {
+        // Descendants of root: parents are listed before or after children, so repeat until stable
+        std::map<DWORD, DWORD> parentOf;
+        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snapshot == INVALID_HANDLE_VALUE) continue;
+        PROCESSENTRY32W entry{sizeof(entry)};
+        for (BOOL more = Process32FirstW(snapshot, &entry); more; more = Process32NextW(snapshot, &entry))
+            parentOf[entry.th32ProcessID] = entry.th32ParentProcessID;
+        CloseHandle(snapshot);
+        std::set<DWORD> tree{root};
+        for (bool grew = true; grew;) {
+            grew = false;
+            for (const auto& [child, parent] : parentOf)
+                if (tree.count(parent) && tree.insert(child).second) grew = true;
+        }
+        for (DWORD pid : tree)
+            if (!routed.count(pid) && routeProcessAudio(pid, audio)) {
+                routed.insert(pid);
+                hostLog("audio: pid %lu (process tree of %lu) -> %ls", pid, root, audio.id.empty() ? L"Windows default" : audio.name.c_str());
+            }
+    }
+    if (rootProcess) CloseHandle(rootProcess);
+    CoUninitialize();
+}
+
 bool isRetro(AppId id) { return id == AppId::RetroArch || id == AppId::Doom || id == AppId::DuckHunt; }
 bool isVideo(AppId id) { return id == AppId::Movies || id == AppId::Plex; }
 int writePlaylists(const Config& c);  // playlists.cpp
@@ -119,6 +153,20 @@ std::vector<AppInfo> listApps(const Config& c) {
     std::wstring mpvMissing = exists(c.mpv) ? L"" : L"mpv missing - rerun setup_apps.py";
     apps.push_back({AppId::Movies, L"MOVIES", L"Your video folders", mpvMissing, rgb(40, 170, 150)});
     apps.push_back({AppId::Plex, L"PLEX", L"Your Plex server", mpvMissing, rgb(229, 160, 13)});
+    apps.push_back({AppId::Reels, L"REELS", L"Instagram Reels", exists(c.edge) ? L"" : L"No Chrome or Edge found - set browser= in arcade.ini",
+                    rgb(225, 48, 108)});
+    // arcade.ini [host] tiles= (comma separated titles, e.g. "reels") keeps only those tiles
+    if (!c.tiles.empty()) {
+        auto wanted = [&](const std::wstring& title) {
+            std::wstring list = L"," + c.tiles + L",", t = title;
+            for (auto& ch : list) ch = wchar_t(towlower(ch));
+            for (auto& ch : t) ch = wchar_t(towlower(ch));
+            list.erase(std::remove(list.begin(), list.end(), L' '), list.end());
+            t.erase(std::remove(t.begin(), t.end(), L' '), t.end());
+            return list.find(L"," + t + L",") != std::wstring::npos;
+        };
+        apps.erase(std::remove_if(apps.begin(), apps.end(), [&](const AppInfo& a) { return !wanted(a.title); }), apps.end());
+    }
     return apps;
 }
 
@@ -154,6 +202,19 @@ bool Session::launch(AppId id, const std::wstring& target, double startSeconds) 
         setEnv(L"ECHO_ARCADE_STEAM", L"1");
         setEnv(L"ECHO_ARCADE_WIDTH", std::to_wstring(SCREEN_W));
         setEnv(L"ECHO_ARCADE_HEIGHT", std::to_wstring(SCREEN_H));
+    } else if (id == AppId::Reels) {
+        // Chrome (or Edge) in app mode, with its own profile (the Instagram login stays there).
+        // Background throttling is off so the reel keeps playing while the window sits behind
+        // Echo VR, and the audio stays in the browser process so it can be routed to the headset.
+        exe = config_.edge;
+        cwd = folderOf(exe);
+        std::wstring profile = localAppData() + L"\\EchoArcade\\reels-profile";
+        args = L"--app=\"" + config_.reelsUrl + L"\" --user-data-dir=\"" + profile + L"\" --remote-debugging-port=" +
+               std::to_wstring(config_.reelsPort) + L" --remote-allow-origins=http://127.0.0.1 --no-first-run --no-default-browser-check"
+               L" --window-position=0,0 --window-size=" + std::to_wstring(SCREEN_W) + L"," + std::to_wstring(SCREEN_H) +
+               L" --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --disable-renderer-backgrounding"
+               L" --disable-backgrounding-occluded-windows --disable-features=CalculateNativeWinOcclusion,AudioServiceOutOfProcess";
+        reels_.setPort(config_.reelsPort);
     } else if (isVideo(id)) {
         exe = config_.mpv;
         cwd = folderOf(exe);
@@ -186,8 +247,19 @@ bool Session::launch(AppId id, const std::wstring& target, double startSeconds) 
     // Route its sound to the headset. Windows refuses (E_INVALIDARG) until the process
     // has started, and moves any sound it already plays when the route is set.
     ResumeThread(pi.hThread);
-    if (audio.id.empty()) hostLog("audio: no device matching \"%ls\"; using the Windows default", config_.audioDevice.c_str());
-    else {
+    if (audio.id.empty() || (id == AppId::Reels && config_.reelsAudio == L"default")) {
+        // Windows default output: clear any device Windows saved for this program earlier (it keeps
+        // one per .exe, e.g. from an older arcade route), for the app and every process it starts.
+        hostLog("audio: %ls plays on the Windows default output", id == AppId::Reels ? L"REELS" : L"the app");
+        DWORD pid = pi.dwProcessId;
+        std::thread([pid] { routeProcessTree(pid, AudioTarget{}); }).detach();
+    } else if (id == AppId::Reels) {
+        // Chrome plays sound from a separate audio process that starts later (and always runs out of
+        // process, unlike Edge with the flag above): keep routing the browser and every process it
+        // starts until the browser closes.
+        DWORD pid = pi.dwProcessId;
+        std::thread([pid, audio] { routeProcessTree(pid, audio); }).detach();
+    } else {
         DWORD pid = pi.dwProcessId;
         std::thread([pid, audio] {
             (void)CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -271,6 +343,7 @@ void Session::quit() {
     quitAt_ = GetTickCount64();
     if (isRetro(id_)) command("QUIT");
     else if (isVideo(id_)) mpv_.command(R"(["quit"])");
+    else if (id_ == AppId::Reels) { reels_.disconnect(); if (window_) PostMessageW(window_, WM_CLOSE, 0, 0); }
     else {
         const char msg[] = "quit";
         send(config_.balatroPort, msg, int(sizeof(msg) - 1));
@@ -279,6 +352,7 @@ void Session::quit() {
 
 void Session::kill() {
     mpv_.disconnect();
+    reels_.disconnect();
     capture_.stop();
     window_ = nullptr;
     if (process_) {

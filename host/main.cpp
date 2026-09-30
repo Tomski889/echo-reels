@@ -455,6 +455,7 @@ private:
             case Mode::Running:
                 if (isVideo(session_.id())) playerTouch(t);
                 else if (isRetro(session_.id())) retroTouch(t);
+                else if (session_.id() == AppId::Reels) reelsTouch(t);
                 else balatroTouch(t);
                 break;
         }
@@ -612,8 +613,37 @@ private:
         }
     }
 
+    // REELS: a quick touch is a click where it landed; sliding up or down (like a phone) scrolls to
+    // the next or previous reel. The menu button (top left) works as in Balatro.
+    void reelsTouch(const Touch& t) {
+        if (BALATRO_HOME.contains(t.x, t.y) && !reelsActive_) { if (!t.down) openMenu(); return; }
+        if (t.down && !reelsActive_) {
+            reelsActive_ = true;
+            reelsStartX_ = reelsLastX_ = t.x;
+            reelsStartY_ = reelsLastY_ = t.y;
+            return;
+        }
+        if (t.down) { reelsLastX_ = t.x; reelsLastY_ = t.y; return; }
+        if (!held_.empty() || !reelsActive_) return;  // wait until every finger cell is released
+        reelsActive_ = false;
+        int dx = reelsLastX_ - reelsStartX_, dy = reelsLastY_ - reelsStartY_;
+        float u, v;
+        if (!toApp(reelsStartX_, reelsStartY_, u, v)) return;
+        HWND window = session_.window();
+        if (std::abs(dy) >= 70 && std::abs(dy) > std::abs(dx)) {
+            // Finger moved up = next reel, like swiping on a phone
+            session_.reels().wheel(window, u, v, dy < 0 ? 600 : -600);
+        } else {
+            session_.reels().tap(window, u, v);
+        }
+    }
+
     // ------------------------------------------------ drawing
     Rect tileRect(size_t i) const {
+        if (apps_.size() > 6) {  // Four columns once there are more than six tiles
+            int col = int(i % 4), row = int(i / 4);
+            return {20 + col * 248, 88 + row * 222, 20 + col * 248 + 236, 88 + row * 222 + 210};
+        }
         int col = int(i % 3), row = int(i / 3);
         return {20 + col * 332, 88 + row * 222, 20 + col * 332 + 320, 88 + row * 222 + 210};
     }
@@ -659,7 +689,7 @@ private:
             canvas_.fill(r, on ? rgb(48, 56, 80) : rgb(30, 34, 50));
             canvas_.fill({r.x0, r.y0, r.x0 + 12, r.y1}, a.accent);
             canvas_.frame(r, on ? rgb(255, 255, 255) : rgb(50, 58, 84), on ? 4 : 2);
-            canvas_.text({r.x0 + 30, r.y0 + 26, r.x1 - 12, r.y0 + 96}, a.title, 40, rgb(245, 245, 250), true, 0);
+            canvas_.text({r.x0 + 30, r.y0 + 26, r.x1 - 12, r.y0 + 96}, a.title, apps_.size() > 6 ? 32 : 40, rgb(245, 245, 250), true, 0);
             canvas_.text({r.x0 + 30, r.y0 + 96, r.x1 - 12, r.y0 + 134}, a.subtitle, 21, rgb(180, 190, 210), false, 0);
             if (!a.missing.empty())
                 canvas_.text({r.x0 + 30, r.y0 + 140, r.x1 - 12, r.y0 + 180}, a.missing, 17, rgb(255, 170, 90), false, 0);
@@ -819,6 +849,8 @@ private:
     int pressed_ = -1;
     bool pointerDown_ = false, stickMode_ = false, gunUsed_ = false, padHeld_[PadCount] = {};
     float lastU_ = 0, lastV_ = 0, stick_[2] = {};
+    bool reelsActive_ = false;  // REELS: a finger is down (start and latest cell centre)
+    int reelsStartX_ = 0, reelsStartY_ = 0, reelsLastX_ = 0, reelsLastY_ = 0;
     std::wstring message_, loading_, playing_, linkCode_;
     std::string linkPin_;
     uint64_t linkStarted_ = 0, lastLinkPoll_ = 0, controlsUntil_ = 0, lastTimeline_ = 0;

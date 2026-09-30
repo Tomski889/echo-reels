@@ -87,8 +87,9 @@ AudioTarget findAudioDevice(const std::wstring& patterns) {
     return out;
 }
 
+// An empty target clears the process's saved device, so it follows the Windows default again
+// (Windows keeps the choice per program, so this also undoes an earlier route of the same .exe).
 bool routeProcessAudio(DWORD pid, const AudioTarget& target) {
-    if (target.id.empty()) return false;
     static const wchar_t cls[] = L"Windows.Media.Internal.AudioPolicyConfig";
     HSTRING className = nullptr;
     if (FAILED(WindowsCreateString(cls, UINT32(wcslen(cls)), &className))) return false;
@@ -96,9 +97,11 @@ bool routeProcessAudio(DWORD pid, const AudioTarget& target) {
     HRESULT hr = RoGetActivationFactory(className, __uuidof(IAudioPolicyConfigFactory), &factory);
     WindowsDeleteString(className);
     if (FAILED(hr)) { lastAudioError = hr; return false; }
-    std::wstring path = L"\\\\?\\SWD#MMDEVAPI#" + target.id + L"#{e6327cad-dcec-4949-ae8a-991e976a79d2}";
-    HSTRING device = nullptr;
-    if (FAILED(WindowsCreateString(path.c_str(), UINT32(path.size()), &device))) return false;
+    HSTRING device = nullptr;  // null = no saved device (follow the Windows default)
+    if (!target.id.empty()) {
+        std::wstring path = L"\\\\?\\SWD#MMDEVAPI#" + target.id + L"#{e6327cad-dcec-4949-ae8a-991e976a79d2}";
+        if (FAILED(WindowsCreateString(path.c_str(), UINT32(path.size()), &device))) return false;
+    }
     HRESULT a = factory->SetPersistedDefaultAudioEndpoint(pid, eRender, eMultimedia, device);
     HRESULT b = factory->SetPersistedDefaultAudioEndpoint(pid, eRender, eConsole, device);
     WindowsDeleteString(device);

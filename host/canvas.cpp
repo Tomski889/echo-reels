@@ -75,6 +75,34 @@ Config loadConfig() {
     GetPrivateProfileStringW(L"host", L"light_gun", L"touch", gun, 32, ini.c_str());
     c.lightGun = gun;
     c.balatroPort = GetPrivateProfileIntW(L"host", L"balatro_port", c.balatroPort, ini.c_str());
+    // REELS browser (any Chromium browser works): arcade.ini [paths] browser=, else Google Chrome
+    // (per-machine or per-user install), else Microsoft Edge, which ships with Windows.
+    std::wstring browserDefault;
+    const struct { const wchar_t* var; const wchar_t* path; } candidates[] = {
+        {L"ProgramFiles", L"\\Google\\Chrome\\Application\\chrome.exe"},
+        {L"ProgramFiles(x86)", L"\\Google\\Chrome\\Application\\chrome.exe"},
+        {L"LOCALAPPDATA", L"\\Google\\Chrome\\Application\\chrome.exe"},
+        {L"ProgramFiles(x86)", L"\\Microsoft\\Edge\\Application\\msedge.exe"},
+        {L"ProgramFiles", L"\\Microsoft\\Edge\\Application\\msedge.exe"},
+    };
+    for (const auto& candidate : candidates) {
+        wchar_t base[MAX_PATH];
+        if (!GetEnvironmentVariableW(candidate.var, base, MAX_PATH)) continue;
+        std::wstring browser = std::wstring(base) + candidate.path;
+        if (GetFileAttributesW(browser.c_str()) != INVALID_FILE_ATTRIBUTES) { browserDefault = browser; break; }
+    }
+    c.edge = get(L"browser", get(L"edge", browserDefault.c_str()).c_str());  // edge= is the older key
+    wchar_t url[1024];
+    GetPrivateProfileStringW(L"host", L"reels_url", L"https://www.instagram.com/reels/", url, 1024, ini.c_str());
+    c.reelsUrl = url;
+    c.reelsPort = GetPrivateProfileIntW(L"host", L"reels_port", c.reelsPort, ini.c_str());
+    // Chrome's sandboxed audio process ignores per-app output routing, so REELS uses the Windows default
+    wchar_t reelsAudio[32];
+    GetPrivateProfileStringW(L"host", L"reels_audio", L"default", reelsAudio, 32, ini.c_str());
+    c.reelsAudio = reelsAudio;
+    wchar_t tiles[256];
+    GetPrivateProfileStringW(L"host", L"tiles", L"", tiles, 256, ini.c_str());
+    c.tiles = tiles;
     c.retroCmdPort = GetPrivateProfileIntW(L"host", L"retroarch_command_port", c.retroCmdPort, ini.c_str());
     c.retroPadPort = GetPrivateProfileIntW(L"host", L"retroarch_pad_port", c.retroPadPort, ini.c_str());
     return c;

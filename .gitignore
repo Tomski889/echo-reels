@@ -4,7 +4,7 @@
 /build/
 /dist/
 /backups/
-install_state.json
+install_state*.json
 .venv/
 __pycache__/
 *.pyc
