@@ -53,6 +53,10 @@ DXGI_B8G8R8A8_UNORM = 87
 # The tablet's own UI textures are all sRGB (BC7_UNORM_SRGB). A linear UNORM screen
 # made the game gamma-correct our already-sRGB pixels a second time: washed out.
 DXGI_B8G8R8A8_UNORM_SRGB = 91
+# Experiment (ECHO_ARCADE_SIDE_PROBE=1): also draw the arcade screen where the social tablet's player card sits
+# (root canvas x 1052..1994, beside the page), to see whether that side area is drawn while no card is open.
+SIDE_PROBE = os.environ.get('ECHO_ARCADE_SIDE_PROBE') == '1'
+SIDE_PROBE_RECT = (1052, 112, 1994, 640)
 
 
 def cell_symbol(c, r):
@@ -214,6 +218,14 @@ def build():
     struct.pack_into('<4f', root.elements[header], 0x78, .02, .02, .03, 1)
     title = root.label(donor.elements[1], 'echo_arcade_title_v1', 'ARCADE', (130, 22, 822, 112), 40, hidden=True, capacity=64)
     struct.pack_into('<2I', root.header, 0x2c, 264, 396)
+    if SIDE_PROBE:
+        probe = root.append(sprite_template, 'echo_arcade_side_probe_v1', SIDE_PROBE_RECT)
+        row = root.elements[probe]
+        struct.pack_into('<4f', row, 0x78, 1, 1, 1, 1)
+        struct.pack_into('<Q', row, 0x88, TEXTURE)
+        struct.pack_into('<4f', row, 0x90, 0, 0, 1, 1)
+        struct.pack_into('<2I', root.header, 0x2c, 272, 408)  # room for its quad
+        print('SIDE PROBE: arcade screen also drawn at', SIDE_PROBE_RECT, 'in the root canvas')
     struct.pack_into('<2I', nav.header, 0x2c, 548, 822)
     for c in (root, nav, page):
         fix_texture_count(c)
