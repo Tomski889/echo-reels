@@ -214,6 +214,37 @@ namespace ArcadeReelsSetup
 		// EchoLoader reads echoloader.json itself; anything else in dbgcore.dll (e.g. EchoRelay's patch) does not.
 		bool EchoLoaderPresent() { return Contains(Path.Combine(Bin, "dbgcore.dll"), "echoloader.json"); }
 
+		// Echo Arcade installed by another setup (e.g. its own install.py): its install_state.json sits in that setup's
+		// folder, found from the paths it wrote into arcade.ini (love=<folder>\apps\love\love-11.5-win64\love.exe).
+		// Null when there is none, "" when it is installed but its record cannot be found.
+		string OtherArcadeState()
+		{
+			if (File.Exists(StatePath)) return null;
+			string ini = Path.Combine(Bin, "plugins", "EchoArcade", "arcade.ini");
+			bool present = File.Exists(Path.Combine(Bin, "plugins", "EchoArcade.dll")) || File.Exists(ini);
+			if (!present) return null;
+			try
+			{
+				string love = File.ReadAllLines(ini).Select(l => l.Trim()).FirstOrDefault(l => l.StartsWith("love=", StringComparison.OrdinalIgnoreCase));
+				string folder = love == null ? null : love.Substring(5);
+				for (int up = 0; up < 4 && folder != null; up++) folder = Path.GetDirectoryName(folder);
+				string state = folder == null ? null : Path.Combine(folder, "install_state.json");
+				if (state != null && File.Exists(state) && !string.Equals(Path.GetFullPath(state), Path.GetFullPath(StatePath), StringComparison.OrdinalIgnoreCase))
+					return state;
+			}
+			catch { }
+			return "";
+		}
+
+		// Other tablet mods in the way of a fresh install, for the status line
+		List<string> OtherTabletMods()
+		{
+			var mods = new List<string>();
+			if (OtherArcadeState() != null) mods.Add("Echo Arcade (installed by another setup)");
+			if (TabletMods.TrainerInstalled(_game)) mods.Add("EchoTabletTrainer");
+			return mods;
+		}
+
 		bool Installed()
 		{
 			if (!File.Exists(StatePath)) return false;
@@ -251,6 +282,11 @@ namespace ArcadeReelsSetup
 			}
 			else if (File.Exists(StatePath)) { parts.Add("Installed, but its tablet data is missing (another mod tool rewrote the game data). Click Install / Repair."); dot = Theme.Warn; }
 			else parts.Add("Not installed.");
+			if (!File.Exists(StatePath))
+			{
+				List<string> others = OtherTabletMods();
+				if (others.Count > 0) { parts.Add("Found another tablet mod: " + string.Join(", ", others) + ". Install / Repair offers to uninstall it."); dot = Theme.Warn; }
+			}
 			if (GameRunning()) parts.Add("Echo is running.");
 			status.Set(string.Join(" ", parts), dot);
 		}
@@ -293,8 +329,17 @@ namespace ArcadeReelsSetup
 			Write("Unpacked the installer files to " + app);
 		}
 
+		readonly StringBuilder _pythonOutput = new StringBuilder();
+
+		bool Ask(string question)
+		{
+			return (DialogResult)Invoke((Func<DialogResult>)(() => MessageBox.Show(this, question, "Echo Arcade Reels",
+				MessageBoxButtons.YesNo, MessageBoxIcon.Question))) == DialogResult.Yes;
+		}
+
 		int Python(string args)
 		{
+			lock (_pythonOutput) _pythonOutput.Clear();
 			string app = Path.Combine(AppDir, "app");
 			var psi = new ProcessStartInfo(Path.Combine(app, "python", "python.exe"), "-u tools\\install.py " + args + " --game \"" + _game + "\"")
 			{
@@ -305,8 +350,8 @@ namespace ArcadeReelsSetup
 			psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
 			using (var p = Process.Start(psi))
 			{
-				p.OutputDataReceived += (o, e) => { if (e.Data != null) Write(e.Data); };
-				p.ErrorDataReceived += (o, e) => { if (e.Data != null) Write(e.Data); };
+				p.OutputDataReceived += (o, e) => { if (e.Data != null) { Write(e.Data); lock (_pythonOutput) _pythonOutput.AppendLine(e.Data); } };
+				p.ErrorDataReceived += (o, e) => { if (e.Data != null) { Write(e.Data); lock (_pythonOutput) _pythonOutput.AppendLine(e.Data); } };
 				p.BeginOutputReadLine();
 				p.BeginErrorReadLine();
 				p.WaitForExit();
@@ -328,8 +373,20 @@ namespace ArcadeReelsSetup
 
 			if (!File.Exists(StatePath))
 			{
+				if (!RemoveOtherTabletMods()) { Write("Install stopped: another tablet mod is still installed."); return; }
 				Write("Building the tablet tab from your game data...");
-				if (Python("install") != 0) { Write("Install failed (see above)."); return; }
+				if (Python("install") != 0)
+				{
+					string output;
+					lock (_pythonOutput) output = _pythonOutput.ToString();
+					if (output.Contains("Unexpected stock tablet layout") || output.Contains("ARCADE is already installed"))
+					{
+						Write("The tablet is already changed by a mod this setup does not recognise.");
+						Write("Uninstall that mod with its own uninstaller (or restore the game files), then click Install / Repair again.");
+					}
+					Write("Install failed (see above).");
+					return;
+				}
 			}
 			else
 			{
@@ -339,6 +396,45 @@ namespace ArcadeReelsSetup
 			ConfigureReelsOnly();
 			InstallLoader();
 			Write("Done. Start Echo VR, open the hand tablet and press the gamepad tab, then REELS.");
+		}
+
+		// Offers to uninstall tablet mods that would stop the install; false when one stays installed
+		bool RemoveOtherTabletMods()
+		{
+			string arcade = OtherArcadeState();
+			if (arcade == "")
+			{
+				Write("Echo Arcade is already installed by another setup, and its install record was not found.");
+				Write("Uninstall it with that setup (install.py restore), then click Install / Repair again.");
+				return false;
+			}
+			if (arcade != null)
+			{
+				if (!Ask("Echo Arcade is already installed by another setup (" + Path.GetDirectoryName(arcade) + ").\n\n" +
+					"Echo Reels uses the same tablet tab, so that install has to be removed first. Uninstall it now?"))
+					return false;
+				Write("Uninstalling the other Echo Arcade install...");
+				File.Copy(arcade, StatePath, true);  // its restore runs from our copy of the tools
+				int code = Python("restore");
+				if (code != 0 && Ask("The game data changed after that Echo Arcade was installed (another mod or a game update). Restore its backup anyway? That also removes changes made since."))
+					code = Python("restore --force");
+				if (code != 0)
+				{
+					if (File.Exists(StatePath)) File.Delete(StatePath);
+					Write("Could not uninstall the other Echo Arcade install (see above).");
+					return false;
+				}
+				File.Move(arcade, arcade + ".removed-by-reels-" + DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+				Write("Uninstalled the other Echo Arcade install.");
+			}
+			if (TabletMods.TrainerInstalled(_game))
+			{
+				if (!Ask("EchoTabletTrainer is installed. It changes the same tablet screens as Echo Reels, so the two cannot be installed together.\n\n" +
+					"Uninstall EchoTabletTrainer now? (A copy of everything it changed is kept in the Echo VR folder.)"))
+					return false;
+				if (!TabletMods.RemoveTrainer(_game, Write, Ask)) return false;
+			}
+			return true;
 		}
 
 		// Only the REELS tile, sound on the Windows default output

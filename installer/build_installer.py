@@ -60,8 +60,8 @@ def main():
     icon = ROOT / 'installer/icon.ico'
     cmd = [str(csc), '/nologo', '/target:winexe', '/platform:x64', '/optimize', f'/out:{out}',
            f'/resource:{payload},payload.zip', '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Core.dll',
-           '/r:System.IO.Compression.dll', '/r:System.IO.Compression.FileSystem.dll',
-           str(ROOT / 'installer/ArcadeReelsSetup.cs'), str(ROOT / 'installer/Ui.cs')]
+           '/r:System.IO.Compression.dll', '/r:System.IO.Compression.FileSystem.dll', '/r:System.Web.Extensions.dll',
+           str(ROOT / 'installer/ArcadeReelsSetup.cs'), str(ROOT / 'installer/TabletMods.cs'), str(ROOT / 'installer/Ui.cs')]
     if icon.exists():
         cmd.insert(5, f'/win32icon:{icon}')
     result = subprocess.run(cmd, capture_output=True, text=True)
