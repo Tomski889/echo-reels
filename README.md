@@ -1,3 +1,20 @@
+# Echo Reels (a fork of Echo Arcade)
+
+This fork of [kotorvr/echo-arcade](https://github.com/kotorvr/echo-arcade) adds a **REELS** tile: **Instagram Reels on the Echo VR hand tablet**, and a lightweight installer that installs only that tile.
+
+- **Controls:** tap = click (like, unmute, comments), swipe up / down = next / previous reel, ≡ (top left) = menu.
+- **Browser:** Google Chrome (or Microsoft Edge) in app mode with its own profile, so your normal browser is untouched. The first time, log into Instagram in the window that opens on your desktop (or sign into Chrome sync there so your saved password fills in); it stays logged in.
+- **Sound:** plays on your Windows default output.
+- **Loader:** works without EchoLoader (e.g. with EchoRelay's `dbgcore.dll`): the installer adds a small `dinput8.dll` plugin loader when needed, and keeps another `dinput8` mod (e.g. ReShade) working as `dinput8.chain.dll`.
+
+**Install:** download `EchoArcadeReelsSetup.exe` from Releases, run it, pick your Echo VR folder (usually found automatically), click **Install / Repair** with Echo closed, then open the tablet's gamepad tab and tap **REELS**. **Uninstall** puts everything back. If another mod tool rewrites the game data and the tab disappears, click **Install / Repair** again.
+
+Requirements: Windows 10/11, Echo VR PC (`echovr.exe` build `1683152886`), Chrome or Edge. Nothing else: the installer brings its own Python.
+
+What changed from Echo Arcade: `host/reels.cpp` (DevTools input), the REELS tile and `tiles=` / `browser=` / `reels_audio=` settings in the host, `loader/` (plugin loader), `installer/` (setup app and its build script). Everything else is the original project; see below.
+
+---
+
 # Echo Arcade
 
 A new **Arcade** tab (gamepad icon) on Echo VR's hand tablet that runs **Balatro**, **Duck Hunt**, **RetroArch** (30+ systems, full menu, plus DOOM), your **movies** and your **Plex** server on the tablet screen, all by touch. It's built for private community servers. Everything runs locally on your PC and nothing is networked: only you see your tablet.
