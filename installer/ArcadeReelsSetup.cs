@@ -52,6 +52,8 @@ namespace ArcadeReelsSetup
 
 		[DllImport("dwmapi.dll")]
 		static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+		[DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+		static extern int SetWindowTheme(IntPtr hwnd, string appName, string idList);
 		protected override void OnHandleCreated(EventArgs e)
 		{
 			base.OnHandleCreated(e);
@@ -92,6 +94,7 @@ namespace ArcadeReelsSetup
 			log.Multiline = true; log.ReadOnly = true; log.ScrollBars = ScrollBars.Vertical; log.BorderStyle = BorderStyle.None;
 			log.BackColor = Theme.Card; log.ForeColor = Theme.Muted; log.Font = new Font("Consolas", 8.5f);
 			log.SetBounds(18, 44, 644, 194);
+			log.HandleCreated += delegate { SetWindowTheme(log.Handle, "DarkMode_Explorer", null); };  // dark scrollbar
 			logCard.Controls.Add(log);
 			Controls.AddRange(new Control[] { title, sub, card, logCard });
 
