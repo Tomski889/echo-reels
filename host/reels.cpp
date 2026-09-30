@@ -75,6 +75,22 @@ bool CdpInput::ensure() {
     return true;
 }
 
+int CdpInput::loginShown(int port) {
+    HINTERNET session = WinHttpOpen(L"EchoArcade", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) return -1;
+    WinHttpSetTimeouts(session, 1000, 1000, 1000, 2000);
+    std::string list = httpGet(session, port, L"/json/list");
+    WinHttpCloseHandle(session);
+    size_t at = list.find("\"type\": \"page\"");  // the page firstPagePath() connects to
+    if (at == std::string::npos) return -1;
+    size_t start = list.rfind('{', at), end = list.find('}', at);
+    if (start == std::string::npos || end == std::string::npos) return -1;
+    std::string entry = list.substr(start, end - start);
+    for (const char* marker : {"/accounts/login", "/accounts/onetap", "/accounts/emailsignup", "/challenge", "/two_factor", "\"title\": \"Login"})
+        if (entry.find(marker) != std::string::npos) return 1;
+    return 0;
+}
+
 void CdpInput::reader() {
     std::vector<char> buffer(64 * 1024);
     for (;;) {

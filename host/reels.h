@@ -16,6 +16,8 @@ public:
     void wheel(HWND window, float x, float y, int deltaY);  // + scrolls down (next reel)
     void key(const char* key, const char* code, int virtualKey);
     void disconnect();
+    // 1 while the page is Instagram's login (or a login check), 0 when not, -1 unknown. Asks /json/list, no WebSocket.
+    static int loginShown(int port);
 
 private:
     bool ensure();                         // (re)connects to the first page target

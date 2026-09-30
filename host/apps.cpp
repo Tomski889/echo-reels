@@ -278,6 +278,9 @@ bool Session::launch(AppId id, const std::wstring& target, double startSeconds) 
     pid_ = pi.dwProcessId;
     started_ = lastWindow_ = GetTickCount64();
     quitAt_ = 0;
+    reelsLogin_ = std::make_shared<std::atomic<int>>(-1);
+    lastLoginCheck_ = 0;
+    loginRaised_ = false;
     std::fill(std::begin(padState_), std::end(padState_), false);
     hostLog("launched pid=%lu: %ls", pid_, redact(cmd).c_str());
     if (isVideo(id)) mpv_.connect();
@@ -300,11 +303,14 @@ void Session::poll() {
     Rect r = contentRect();
     int x = config_.windowMode == L"offscreen" ? -8000 : 0;
     if (window_) {
+        if (id_ == AppId::Reels) reelsWindow(x);
         // Apps resize themselves (RetroArch does on content load); keep nudging it back.
+        // The REELS window keeps its place in front of or behind other windows (see reelsWindow()).
         uint64_t now = GetTickCount64();
         RECT wr;
         if (!isRetro(id_) && now - lastPlace_ > 1000 && GetWindowRect(window_, &wr) && (wr.right - wr.left != r.w() || wr.bottom - wr.top != r.h())) {
-            SetWindowPos(window_, HWND_BOTTOM, x, 0, r.w(), r.h(), SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+            UINT flags = SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS | (id_ == AppId::Reels ? SWP_NOZORDER | SWP_NOMOVE : 0);
+            SetWindowPos(window_, HWND_BOTTOM, x, 0, r.w(), r.h(), flags);
             lastPlace_ = now;
         }
         return;
@@ -327,15 +333,56 @@ void Session::poll() {
         capture_.start(window_);
         return;
     }
-    std::thread([hwnd, x, w = r.w(), h = r.h()] {
+    // REELS keeps its taskbar button, so the browser (and Instagram's login) can be reached from the desktop.
+    std::thread([hwnd, x, w = r.w(), h = r.h(), taskbar = id_ == AppId::Reels] {
         LONG style = GetWindowLongW(hwnd, GWL_STYLE);
         SetWindowLongW(hwnd, GWL_STYLE, (style & ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX)) | WS_POPUP);
         LONG ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
-        SetWindowLongW(hwnd, GWL_EXSTYLE, (ex & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW);
+        SetWindowLongW(hwnd, GWL_EXSTYLE, taskbar ? (ex & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW : (ex & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW);
         SetWindowPos(hwnd, HWND_BOTTOM, x, 0, w, h, SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
     }).detach();
     hostLog("window %p found; placing %dx%d (%ls mode)", window_, r.w(), r.h(), config_.windowMode.c_str());
     capture_.start(window_);
+}
+
+// REELS: while Instagram shows its login, the browser window comes on screen in front of every other
+// window (and flashes on the taskbar), so it can be signed in without minimising everything; once
+// signed in it goes back behind. A window minimised from the taskbar is restored behind the others,
+// because the tablet cannot capture a minimised window.
+void Session::reelsWindow(int x) {
+    uint64_t now = GetTickCount64();
+    if (now - lastLoginCheck_ < 1500) return;
+    lastLoginCheck_ = now;
+    if (!reelsLogin_) reelsLogin_ = std::make_shared<std::atomic<int>>(-1);
+    // Asking the browser can take a moment; the answer is used on the next check.
+    std::thread([state = reelsLogin_, port = config_.reelsPort] { *state = CdpInput::loginShown(port); }).detach();
+    int login = reelsLogin_->load();
+    HWND hwnd = window_;
+    if (login == 1 && !loginRaised_) {
+        loginRaised_ = true;
+        hostLog("reels: Instagram login shown; bringing the browser window to the front of the desktop");
+        std::thread([hwnd] {
+            if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW);
+            SetForegroundWindow(hwnd);  // Windows may refuse; topmost still puts it in front
+            FLASHWINFO flash{sizeof(flash), hwnd, FLASHW_ALL | FLASHW_TIMERNOFG, 0, 0};
+            FlashWindowEx(&flash);
+        }).detach();
+    } else if (login == 0 && loginRaised_) {
+        loginRaised_ = false;
+        hostLog("reels: signed in; the browser window goes back behind the other windows");
+        std::thread([hwnd, x] {
+            FLASHWINFO flash{sizeof(flash), hwnd, FLASHW_STOP, 0, 0};
+            FlashWindowEx(&flash);
+            SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            SetWindowPos(hwnd, HWND_BOTTOM, x, 0, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        }).detach();
+    } else if (!loginRaised_ && IsIconic(hwnd)) {
+        std::thread([hwnd, x] {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            SetWindowPos(hwnd, HWND_BOTTOM, x, 0, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        }).detach();
+    }
 }
 
 void Session::quit() {

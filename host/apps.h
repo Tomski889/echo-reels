@@ -3,8 +3,10 @@
 #include "media.h"
 #include "reels.h"
 #include <winsock2.h>
+#include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <memory>
 #include <thread>
 
 enum class AppId { BalatroSteam, DuckHunt, RetroArch, Doom, Movies, Plex, Reels };
@@ -50,6 +52,7 @@ public:
 
 private:
     void send(int port, const void* data, int size);
+    void reelsWindow(int x);     // REELS: raises the browser window while Instagram shows its login
     const Config& config_;
     AppId id_ = AppId::BalatroSteam;
     HANDLE process_ = nullptr;
@@ -60,6 +63,9 @@ private:
     int16_t stick_[2] = {};
     MpvControl mpv_;
     CdpInput reels_;
+    std::shared_ptr<std::atomic<int>> reelsLogin_;  // CdpInput::loginShown(), checked on a worker thread
+    uint64_t lastLoginCheck_ = 0;
+    bool loginRaised_ = false;
     SOCKET udp_ = INVALID_SOCKET;
     WindowCapture capture_;
 };
