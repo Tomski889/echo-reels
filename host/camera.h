@@ -12,6 +12,8 @@ struct CameraOptions {
 std::wstring echoCamDll(const Config& config);             // plugins\EchoCam.dll beside the EchoArcade folder
 CameraOptions loadCameraOptions(const Config& config);     // from EchoCam.ini
 void saveCameraOptions(const Config& config, const CameraOptions& options);  // EchoCam re-reads it live
+// On: the camera follows the chosen hand; off: the game's own view from the head (outside the CAMERA tile)
+void setHandCamera(const Config& config, bool on);
 HWND findEchoWindow();                                     // the game's main window (the camera view)
 // Saves a BGRA frame as Pictures\Echo\Echo_<date>_<time>.png; returns the file name, empty on failure.
 std::wstring savePhoto(const std::vector<uint8_t>& bgra, int w, int h);

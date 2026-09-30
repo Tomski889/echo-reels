@@ -43,10 +43,15 @@ CameraOptions loadCameraOptions(const Config& config) {
 
 void saveCameraOptions(const Config& config, const CameraOptions& options) {
     std::wstring ini = echoCamIni(config);
-    WritePrivateProfileStringW(L"EchoCam", L"Mode", L"hand", ini.c_str());
     WritePrivateProfileStringW(L"EchoCam", L"Hand", options.rightHand ? L"right" : L"left", ini.c_str());
     WritePrivateProfileStringW(L"EchoCam", L"HandYaw", options.selfie ? L"180" : L"0", ini.c_str());
     hostLog("camera: %s hand, %s", options.rightHand ? "right" : "left", options.selfie ? "selfie" : "front");
+}
+
+void setHandCamera(const Config& config, bool on) {
+    if (GetFileAttributesW(echoCamDll(config).c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    WritePrivateProfileStringW(L"EchoCam", L"Mode", on ? L"hand" : L"head", echoCamIni(config).c_str());
+    hostLog("camera: %s view", on ? "hand" : "head");
 }
 
 HWND findEchoWindow() {

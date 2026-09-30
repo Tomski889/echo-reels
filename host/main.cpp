@@ -73,6 +73,7 @@ public:
         apps_ = listApps(config_);
         loadSettings();
         shared_->hostPid = LONG(GetCurrentProcessId());
+        setHandCamera(config_, false);  // the head's view unless the CAMERA tile is open
     }
 
     ~Host() {
@@ -117,6 +118,7 @@ public:
             Sleep(1500);
         }
         session_.kill();
+        if (mode_ == Mode::Camera) setHandCamera(config_, false);
     }
 
 private:
@@ -307,7 +309,7 @@ private:
     // The game's desktop window shows the second viewport (-capturevp2), which EchoCam puts on a hand.
     void openCamera() {
         camOptions_ = loadCameraOptions(config_);
-        saveCameraOptions(config_, camOptions_);  // hand mode on
+        setHandCamera(config_, true);
         camWindow_ = nullptr;
         camSerial_ = 0;
         camW_ = camH_ = 0;
@@ -316,6 +318,7 @@ private:
         resetInput();
     }
     void closeCamera() {
+        setHandCamera(config_, false);
         camCapture_.stop();
         camWindow_ = nullptr;
         toLauncher();
