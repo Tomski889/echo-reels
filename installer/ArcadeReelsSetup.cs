@@ -170,20 +170,34 @@ namespace ArcadeReelsSetup
 			return Process.GetProcessesByName("echovr").Length > 0;
 		}
 
+		// The marker as ASCII or UTF-16 text (DLLs keep file names in either)
 		static bool Contains(string path, string marker)
 		{
 			try
 			{
-				byte[] data = File.ReadAllBytes(path), m = Encoding.ASCII.GetBytes(marker);
-				for (int i = 0; i + m.Length <= data.Length; i++)
-				{
-					int k = 0;
-					while (k < m.Length && data[i + k] == m[k]) k++;
-					if (k == m.Length) return true;
-				}
+				byte[] data = File.ReadAllBytes(path);
+				foreach (byte[] m in new[] { Encoding.ASCII.GetBytes(marker), Encoding.Unicode.GetBytes(marker) })
+					for (int i = 0; i + m.Length <= data.Length; i++)
+					{
+						int k = 0;
+						while (k < m.Length && data[i + k] == m[k]) k++;
+						if (k == m.Length) return true;
+					}
 			}
 			catch { }
 			return false;
+		}
+
+		// What will load plugins\EchoArcade.dll when the game starts
+		enum Loader { None, EchoLoader, DiscGlow, OldDiscGlow, Ours, OtherMod }
+		Loader CurrentLoader()
+		{
+			string dinput = Path.Combine(Bin, "dinput8.dll");
+			if (EchoLoaderPresent()) return Loader.EchoLoader;
+			if (!File.Exists(dinput)) return Loader.None;
+			if (Contains(dinput, LoaderMarker)) return Loader.Ours;
+			if (Contains(dinput, DiscGlowMarker)) return Contains(dinput, "echoloader.json") ? Loader.DiscGlow : Loader.OldDiscGlow;
+			return Loader.OtherMod;
 		}
 
 		static uint PeTimestamp(string exe)
@@ -220,7 +234,21 @@ namespace ArcadeReelsSetup
 			var parts = new List<string>();
 			Color dot = Theme.Muted;
 			if (PeTimestamp(Path.Combine(Bin, "echovr.exe")) != ExeTimestamp) { parts.Add("This echovr.exe is not the build Echo Arcade supports; it will stay inactive."); dot = Theme.Warn; }
-			if (Installed()) { parts.Add("Installed."); if (dot != Theme.Warn) dot = Theme.Good; }
+			if (Installed())
+			{
+				Loader loader = CurrentLoader();
+				if (loader == Loader.EchoLoader || loader == Loader.DiscGlow || loader == Loader.Ours)
+				{
+					parts.Add("Installed (loaded by " + (loader == Loader.Ours ? "the Echo Reels loader" : loader.ToString()) + ").");
+					if (dot != Theme.Warn) dot = Theme.Good;
+				}
+				else
+				{
+					parts.Add(loader == Loader.OldDiscGlow ? "Installed, but your DiscGlow is too old to load the plugin (dead tablet tabs). Update DiscGlow, then click Install / Repair."
+						: "Installed, but nothing loads the plugin (dead tablet tabs). Click Install / Repair.");
+					dot = Theme.Warn;
+				}
+			}
 			else if (File.Exists(StatePath)) { parts.Add("Installed, but its tablet data is missing (another mod tool rewrote the game data). Click Install / Repair."); dot = Theme.Warn; }
 			else parts.Add("Not installed.");
 			if (GameRunning()) parts.Add("Echo is running.");
@@ -336,8 +364,16 @@ namespace ArcadeReelsSetup
 		void InstallLoader()
 		{
 			string dinput = Path.Combine(Bin, "dinput8.dll"), chain = Path.Combine(Bin, "dinput8.chain.dll");
-			if (EchoLoaderPresent()) { Write("EchoLoader is installed; it loads the plugin."); return; }
-			if (File.Exists(dinput) && Contains(dinput, DiscGlowMarker)) { Write("DiscGlow is installed; it loads the plugin."); return; }
+			switch (CurrentLoader())
+			{
+				case Loader.EchoLoader: Write("EchoLoader is installed; it loads the plugin."); return;
+				case Loader.DiscGlow: Write("DiscGlow is installed; it loads the plugin."); return;
+				case Loader.OldDiscGlow:
+					// Chaining it would not help (older DiscGlow forwards DirectInput to a chained dinput8 itself)
+					Write("WARNING: your DiscGlow is an older version that cannot load plugins, so the arcade tabs would not respond.");
+					Write("         Update DiscGlow (DiscGlowSetup 1.1 or newer, Install / Update), then click Install / Repair here again.");
+					return;
+			}
 			string ours = Path.Combine(AppDir, "app", "loader", "dinput8.dll");
 			if (File.Exists(dinput) && !Contains(dinput, LoaderMarker))
 			{

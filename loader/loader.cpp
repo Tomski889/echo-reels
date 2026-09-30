@@ -70,6 +70,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
         if (wchar_t* slash = wcsrchr(g_dir, L'\\')) *slash = L'\0';
         const std::wstring chain = std::wstring(g_dir) + L"\\dinput8.chain.dll";
         if (GetFileAttributesW(chain.c_str()) != INVALID_FILE_ATTRIBUTES) g_chain = LoadLibraryW(chain.c_str());
+        if (g_chain == module) { FreeLibrary(g_chain); g_chain = nullptr; }  // this DLL itself: forwarding would loop
         // Not from DllMain (loader lock): plugins start their own threads
         if (HANDLE thread = CreateThread(nullptr, 0, loadPlugins, nullptr, 0, nullptr)) CloseHandle(thread);
     }
