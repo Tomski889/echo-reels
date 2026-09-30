@@ -9,7 +9,7 @@ set "GAME=E:\tes\Software\ready-at-dawn-echo-arena"
 set "DATA=%GAME%\_data\5932408047\rad15\win10"
 set "INI=%GAME%\bin\win10\plugins\EchoArcade\arcade.ini"
 cd /d "%~dp0"
-if not defined VCVARS if exist "C:\Program Files\Microsoft Visual Studio8\Community\VC\Auxiliary\Buildcvars64.bat" set "VCVARS=C:\Program Files\Microsoft Visual Studio8\Community\VC\Auxiliary\Buildcvars64.bat"
+if not defined VCVARS if exist "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" set "VCVARS=C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"
 
 tasklist /FI "IMAGENAME eq echovr.exe" | find /I "echovr.exe" >nul && (echo Close Echo VR first. & exit /b 1)
 
