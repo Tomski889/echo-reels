@@ -400,6 +400,11 @@ namespace ArcadeReelsSetup
 				if (File.Exists(chain)) File.Move(chain, dinput);
 				Write("Removed the plugin loader.");
 			}
+			else if (File.Exists(chain) && Contains(chain, LoaderMarker))
+			{
+				File.Delete(chain); // Our loader, chained by DiscGlow (installed after us)
+				Write("Removed the plugin loader.");
+			}
 			Write(code == 0 ? "Uninstalled." : "Uninstall incomplete (see above).");
 		}
 
