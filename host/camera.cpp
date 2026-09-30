@@ -40,9 +40,9 @@ CameraOptions loadCameraOptions(const Config& config) {
     o.rightHand = _wcsicmp(hand, L"right") == 0;
     o.selfie = GetPrivateProfileIntW(L"EchoCam", L"HandYaw", 0, ini.c_str()) == 180;
     wchar_t offset[64];
-    GetPrivateProfileStringW(L"EchoCam", L"HandOffset", L"0 0.1 -0.25", offset, 64, ini.c_str());
+    GetPrivateProfileStringW(L"EchoCam", L"HandOffset", L"0 0.1 0.25", offset, 64, ini.c_str());
     float x, y, z;
-    if (swscanf_s(offset, L"%f %f %f", &x, &y, &z) == 3) o.reach = std::clamp(-z, CAMERA_REACH_MIN, CAMERA_REACH_MAX);
+    if (swscanf_s(offset, L"%f %f %f", &x, &y, &z) == 3) o.reach = std::clamp(z, CAMERA_REACH_MIN, CAMERA_REACH_MAX);
     o.frozen = false;  // a new camera session starts live
     return o;
 }
@@ -52,7 +52,7 @@ void saveCameraOptions(const Config& config, const CameraOptions& options) {
     WritePrivateProfileStringW(L"EchoCam", L"Hand", options.rightHand ? L"right" : L"left", ini.c_str());
     WritePrivateProfileStringW(L"EchoCam", L"HandYaw", options.selfie ? L"180" : L"0", ini.c_str());
     wchar_t offset[64];
-    swprintf_s(offset, L"0 0.1 %.2f", -options.reach);  // controller space: -z is forward
+    swprintf_s(offset, L"0 0.1 %.2f", options.reach);  // controller space: +z is forward (tested)
     WritePrivateProfileStringW(L"EchoCam", L"HandOffset", offset, ini.c_str());
     WritePrivateProfileStringW(L"EchoCam", L"Freeze", options.frozen ? L"1" : L"0", ini.c_str());
     hostLog("camera: %s hand, %s, reach %.2f m%s", options.rightHand ? "right" : "left", options.selfie ? "selfie" : "front",
