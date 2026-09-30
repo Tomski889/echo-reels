@@ -7,7 +7,10 @@
 struct CameraOptions {
     bool rightHand = false;  // default: the left hand (the tablet hand)
     bool selfie = false;     // looks back at you
+    float reach = .25f;      // metres out from the controller (a selfie stick)
+    bool frozen = false;     // stays where it is in the world (a tripod)
 };
+constexpr float CAMERA_REACH_MIN = .25f, CAMERA_REACH_MAX = 3.f;
 
 std::wstring echoCamDll(const Config& config);             // plugins\EchoCam.dll beside the EchoArcade folder
 CameraOptions loadCameraOptions(const Config& config);     // from EchoCam.ini

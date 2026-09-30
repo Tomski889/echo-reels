@@ -37,7 +37,10 @@ constexpr int ROWS_PER_PAGE = 6, ROW_Y = 84, ROW_H = 72;
 const Rect SEEK_BAR{20, 448, 1004, 476};
 // CAMERA: the live view above a row of buttons
 const Rect CAM_VIEW{0, 0, SCREEN_W, 488};
-const Rect CAM_BACK{12, 498, 172, 566}, CAM_HAND{184, 498, 424, 566}, CAM_FLIP{436, 498, 676, 566}, CAM_SHOT{772, 494, 1012, 570};
+constexpr int CAM_BUTTONS = 8;
+enum CamButton { CamBack, CamHand, CamFlip, CamCloser, CamFurther, CamFreeze, CamTimer, CamShot };
+Rect camButton(int i) { return {12 + i * 126, 498, 12 + i * 126 + 118, 566}; }
+constexpr int CAM_TIMERS[] = {0, 3, 5, 10};  // self-timer choices, seconds
 constexpr int PLAYER_BUTTONS = 10;
 const wchar_t* const PLAYER_LABELS[PLAYER_BUTTONS] = {L"-30s", L"-10s", L"PLAY", L"+10s", L"+30s", L"VOL -", L"VOL +", L"SUBS", L"AUDIO", L"CLOSE"};
 
@@ -309,7 +312,9 @@ private:
     // The game's desktop window shows the second viewport (-capturevp2), which EchoCam puts on a hand.
     void openCamera() {
         camOptions_ = loadCameraOptions(config_);
+        saveCameraOptions(config_, camOptions_);  // unfrozen
         setHandCamera(config_, true);
+        camShotAt_ = 0;
         camWindow_ = nullptr;
         camSerial_ = 0;
         camW_ = camH_ = 0;
@@ -319,11 +324,13 @@ private:
     }
     void closeCamera() {
         setHandCamera(config_, false);
+        camShotAt_ = 0;
         camCapture_.stop();
         camWindow_ = nullptr;
         toLauncher();
     }
     void pollCamera(uint64_t now) {
+        if (camShotAt_ && now >= camShotAt_) { camShotAt_ = 0; takePhoto(); }
         if (camWindow_ && IsWindow(camWindow_) && camCapture_.active()) return;
         if (now - lastWindowSearch_ < 1000) return;
         lastWindowSearch_ = now;
@@ -331,6 +338,11 @@ private:
         camWindow_ = findEchoWindow();
         if (camWindow_ && !camCapture_.start(camWindow_)) camWindow_ = nullptr;
         if (camWindow_) hostLog("camera: capturing the Echo window %p", camWindow_);
+    }
+    std::wstring reachText() const {
+        wchar_t text[48];
+        swprintf_s(text, L"Camera %.2f m from your hand", camOptions_.reach);
+        return text;
     }
     void cameraNote(const std::wstring& text) {
         camNote_ = text;
@@ -348,18 +360,25 @@ private:
         });
     }
     void cameraTouch(const Touch& t) {
-        if (tapped(t, 700, CAM_BACK)) { closeCamera(); return; }
-        if (tapped(t, 701, CAM_HAND)) {
-            camOptions_.rightHand = !camOptions_.rightHand;
+        for (int i = 0; i < CAM_BUTTONS; i++) {
+            if (!tapped(t, 700 + i, camButton(i))) continue;
+            switch (i) {
+                case CamBack: closeCamera(); return;
+                case CamHand: camOptions_.rightHand = !camOptions_.rightHand; break;
+                case CamFlip: camOptions_.selfie = !camOptions_.selfie; break;
+                case CamCloser: camOptions_.reach = std::max(CAMERA_REACH_MIN, camOptions_.reach - .25f); cameraNote(reachText()); break;
+                case CamFurther: camOptions_.reach = std::min(CAMERA_REACH_MAX, camOptions_.reach + .25f); cameraNote(reachText()); break;
+                case CamFreeze: camOptions_.frozen = !camOptions_.frozen; cameraNote(camOptions_.frozen ? L"Camera frozen in place" : L"Camera follows your hand"); break;
+                case CamTimer: camTimer_ = (camTimer_ + 1) % int(std::size(CAM_TIMERS)); return;
+                case CamShot:
+                    if (camShotAt_) { camShotAt_ = 0; cameraNote(L"Timer cancelled"); return; }
+                    if (CAM_TIMERS[camTimer_] == 0) takePhoto();
+                    else camShotAt_ = GetTickCount64() + uint64_t(CAM_TIMERS[camTimer_]) * 1000;
+                    return;
+            }
             saveCameraOptions(config_, camOptions_);
             return;
         }
-        if (tapped(t, 702, CAM_FLIP)) {
-            camOptions_.selfie = !camOptions_.selfie;
-            saveCameraOptions(config_, camOptions_);
-            return;
-        }
-        if (tapped(t, 703, CAM_SHOT)) { takePhoto(); return; }
         if (!t.down) pressed_ = -1;
     }
 
@@ -879,15 +898,31 @@ private:
         uint64_t now = GetTickCount64();
         if (camFlashAt_ && now - camFlashAt_ < 250)  // shutter flash
             canvas_.blend(CAM_VIEW, rgb(255, 255, 255), int(200 * (250 - (now - camFlashAt_)) / 250));
+        if (camShotAt_ && camShotAt_ > now) {  // self-timer countdown
+            wchar_t count[8];
+            swprintf_s(count, L"%llu", (camShotAt_ - now + 999) / 1000);
+            canvas_.blend({412, 150, 612, 340}, rgb(0, 0, 0), 150);
+            canvas_.text({412, 150, 612, 340}, count, 140, rgb(255, 255, 255));
+        }
+        if (camOptions_.frozen) {
+            canvas_.blend({SCREEN_W - 150, 50, SCREEN_W - 12, 90}, rgb(0, 0, 0), 150);
+            canvas_.text({SCREEN_W - 150, 50, SCREEN_W - 12, 90}, L"FROZEN", 20, rgb(120, 200, 255));
+        }
         if (now < camNoteUntil_) {
             canvas_.blend({0, 0, SCREEN_W, 44}, rgb(0, 0, 0), 170);
             canvas_.text({16, 0, SCREEN_W - 16, 44}, camNote_, 20, rgb(255, 255, 255), true, 0);
         }
         canvas_.fill({0, CAM_VIEW.y1, SCREEN_W, SCREEN_H}, rgb(20, 22, 30));
-        button(CAM_BACK, L"\x25C0  BACK", pressed_ == 700, rgb(50, 58, 84), 22);
-        button(CAM_HAND, camOptions_.rightHand ? L"RIGHT HAND" : L"LEFT HAND", pressed_ == 701, rgb(44, 50, 72), 22);
-        button(CAM_FLIP, camOptions_.selfie ? L"SELFIE" : L"FRONT", pressed_ == 702, rgb(44, 50, 72), 22);
-        button(CAM_SHOT, L"\x25CF  PHOTO", pressed_ == 703, rgb(200, 150, 30), 28);
+        wchar_t timer[16];
+        if (CAM_TIMERS[camTimer_]) swprintf_s(timer, L"TIMER %ds", CAM_TIMERS[camTimer_]); else wcscpy_s(timer, L"TIMER OFF");
+        const std::wstring labels[CAM_BUTTONS] = {L"\x25C0 BACK", camOptions_.rightHand ? L"RIGHT" : L"LEFT", camOptions_.selfie ? L"SELFIE" : L"FRONT",
+                                                  L"CLOSER", L"FURTHER", camOptions_.frozen ? L"UNFREEZE" : L"FREEZE", timer,
+                                                  camShotAt_ ? L"CANCEL" : L"\x25CF PHOTO"};
+        for (int i = 0; i < CAM_BUTTONS; i++) {
+            uint32_t color = i == CamBack ? rgb(50, 58, 84) : i == CamShot ? rgb(200, 150, 30) :
+                             i == CamFreeze && camOptions_.frozen ? rgb(40, 90, 130) : rgb(44, 50, 72);
+            button(camButton(i), labels[i], pressed_ == 700 + i, color, 18);
+        }
     }
 
     void drawMenu() {
@@ -964,7 +999,8 @@ private:
     CameraOptions camOptions_;
     std::vector<uint8_t> camPixels_;
     int camW_ = 0, camH_ = 0;
-    uint64_t camSerial_ = 0, lastWindowSearch_ = 0, camFlashAt_ = 0, camNoteUntil_ = 0;
+    uint64_t camSerial_ = 0, lastWindowSearch_ = 0, camFlashAt_ = 0, camNoteUntil_ = 0, camShotAt_ = 0;
+    int camTimer_ = 0;  // index into CAM_TIMERS
     std::wstring camNote_;
 };
 

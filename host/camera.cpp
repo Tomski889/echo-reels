@@ -4,6 +4,7 @@
 #include <tlhelp32.h>
 #include <wincodec.h>
 #include <winrt/base.h>
+#include <algorithm>
 
 namespace {
 
@@ -38,6 +39,11 @@ CameraOptions loadCameraOptions(const Config& config) {
     CameraOptions o;
     o.rightHand = _wcsicmp(hand, L"right") == 0;
     o.selfie = GetPrivateProfileIntW(L"EchoCam", L"HandYaw", 0, ini.c_str()) == 180;
+    wchar_t offset[64];
+    GetPrivateProfileStringW(L"EchoCam", L"HandOffset", L"0 0.1 -0.25", offset, 64, ini.c_str());
+    float x, y, z;
+    if (swscanf_s(offset, L"%f %f %f", &x, &y, &z) == 3) o.reach = std::clamp(-z, CAMERA_REACH_MIN, CAMERA_REACH_MAX);
+    o.frozen = false;  // a new camera session starts live
     return o;
 }
 
@@ -45,12 +51,18 @@ void saveCameraOptions(const Config& config, const CameraOptions& options) {
     std::wstring ini = echoCamIni(config);
     WritePrivateProfileStringW(L"EchoCam", L"Hand", options.rightHand ? L"right" : L"left", ini.c_str());
     WritePrivateProfileStringW(L"EchoCam", L"HandYaw", options.selfie ? L"180" : L"0", ini.c_str());
-    hostLog("camera: %s hand, %s", options.rightHand ? "right" : "left", options.selfie ? "selfie" : "front");
+    wchar_t offset[64];
+    swprintf_s(offset, L"0 0.1 %.2f", -options.reach);  // controller space: -z is forward
+    WritePrivateProfileStringW(L"EchoCam", L"HandOffset", offset, ini.c_str());
+    WritePrivateProfileStringW(L"EchoCam", L"Freeze", options.frozen ? L"1" : L"0", ini.c_str());
+    hostLog("camera: %s hand, %s, reach %.2f m%s", options.rightHand ? "right" : "left", options.selfie ? "selfie" : "front",
+            options.reach, options.frozen ? ", frozen" : "");
 }
 
 void setHandCamera(const Config& config, bool on) {
     if (GetFileAttributesW(echoCamDll(config).c_str()) == INVALID_FILE_ATTRIBUTES) return;
     WritePrivateProfileStringW(L"EchoCam", L"Mode", on ? L"hand" : L"head", echoCamIni(config).c_str());
+    if (!on) WritePrivateProfileStringW(L"EchoCam", L"Freeze", L"0", echoCamIni(config).c_str());
     hostLog("camera: %s view", on ? "hand" : "head");
 }
 
