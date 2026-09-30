@@ -2,6 +2,7 @@
 // Owns the tablet UI (launcher, browsers, touch controls) and the running app;
 // exits when Echo VR goes away.
 #include "apps.h"
+#include "camera.h"
 #include <winrt/base.h>
 #include <algorithm>
 #include <functional>
@@ -34,6 +35,9 @@ constexpr uint64_t SHOT_PRESS_MS = 90;                      // a shot holds its 
 const Rect PAGE_UP{916, 84, 1012, 298}, PAGE_DOWN{916, 306, 1012, 520};
 constexpr int ROWS_PER_PAGE = 6, ROW_Y = 84, ROW_H = 72;
 const Rect SEEK_BAR{20, 448, 1004, 476};
+// CAMERA: the live view above a row of buttons
+const Rect CAM_VIEW{0, 0, SCREEN_W, 488};
+const Rect CAM_BACK{12, 498, 172, 566}, CAM_HAND{184, 498, 424, 566}, CAM_FLIP{436, 498, 676, 566}, CAM_SHOT{772, 494, 1012, 570};
 constexpr int PLAYER_BUTTONS = 10;
 const wchar_t* const PLAYER_LABELS[PLAYER_BUTTONS] = {L"-30s", L"-10s", L"PLAY", L"+10s", L"+30s", L"VOL -", L"VOL +", L"SUBS", L"AUDIO", L"CLOSE"};
 
@@ -49,7 +53,7 @@ std::wstring clock(double s) {
     return b;
 }
 
-enum class Mode { Launcher, Browse, PlexLink, Running, Menu };
+enum class Mode { Launcher, Browse, PlexLink, Running, Menu, Camera };
 
 struct Entry {
     std::wstring label, sub;
@@ -95,6 +99,7 @@ public:
                 appClosed();
             }
             if (mode_ == Mode::PlexLink) pollPlexLink(now);
+            if (mode_ == Mode::Camera) pollCamera(now);
             reportPlexProgress(now);
             pollDock();
             if (shotUpAt_ && now >= shotUpAt_) { shotUpAt_ = 0; onTouch({SHOT_TOUCH, false, shotX_, shotY_}); }
@@ -180,6 +185,7 @@ private:
         current_ = app;
         if (app.id == AppId::Movies) { openMovies(); return; }
         if (app.id == AppId::Plex) { openPlex(); return; }
+        if (app.id == AppId::Camera) { openCamera(); return; }
         if (!session_.launch(app.id)) { message_ = L"Could not start " + app.title + L" (see host.log)."; return; }
         gunUsed_ = false;
         mode_ = Mode::Running;
@@ -295,6 +301,63 @@ private:
         auto item = plexItem_;
         double pos = session_.mpv().position();
         spawn([this, item, pos] { plex_.timeline(item, "stopped", pos); });
+    }
+
+    // ------------------------------------------------ camera
+    // The game's desktop window shows the second viewport (-capturevp2), which EchoCam puts on a hand.
+    void openCamera() {
+        camOptions_ = loadCameraOptions(config_);
+        saveCameraOptions(config_, camOptions_);  // hand mode on
+        camWindow_ = nullptr;
+        camSerial_ = 0;
+        camW_ = camH_ = 0;
+        lastWindowSearch_ = 0;
+        mode_ = Mode::Camera;
+        resetInput();
+    }
+    void closeCamera() {
+        camCapture_.stop();
+        camWindow_ = nullptr;
+        toLauncher();
+    }
+    void pollCamera(uint64_t now) {
+        if (camWindow_ && IsWindow(camWindow_) && camCapture_.active()) return;
+        if (now - lastWindowSearch_ < 1000) return;
+        lastWindowSearch_ = now;
+        camCapture_.stop();
+        camWindow_ = findEchoWindow();
+        if (camWindow_ && !camCapture_.start(camWindow_)) camWindow_ = nullptr;
+        if (camWindow_) hostLog("camera: capturing the Echo window %p", camWindow_);
+    }
+    void cameraNote(const std::wstring& text) {
+        camNote_ = text;
+        camNoteUntil_ = GetTickCount64() + 3000;
+    }
+    void takePhoto() {
+        if (camW_ <= 0 || camPixels_.empty()) { cameraNote(L"No camera picture yet"); return; }
+        camFlashAt_ = GetTickCount64();
+        auto pixels = std::make_shared<std::vector<uint8_t>>(camPixels_);
+        int w = camW_, h = camH_;
+        spawn([this, pixels, w, h] {
+            std::wstring name = savePhoto(*pixels, w, h);
+            std::lock_guard<std::mutex> lock(pendingLock_);
+            pending_.push_back([this, name] { cameraNote(name.empty() ? L"Could not save the photo" : L"Saved Pictures\\Echo\\" + name); });
+        });
+    }
+    void cameraTouch(const Touch& t) {
+        if (tapped(t, 700, CAM_BACK)) { closeCamera(); return; }
+        if (tapped(t, 701, CAM_HAND)) {
+            camOptions_.rightHand = !camOptions_.rightHand;
+            saveCameraOptions(config_, camOptions_);
+            return;
+        }
+        if (tapped(t, 702, CAM_FLIP)) {
+            camOptions_.selfie = !camOptions_.selfie;
+            saveCameraOptions(config_, camOptions_);
+            return;
+        }
+        if (tapped(t, 703, CAM_SHOT)) { takePhoto(); return; }
+        if (!t.down) pressed_ = -1;
     }
 
     // ------------------------------------------------ touches
@@ -452,6 +515,7 @@ private:
             case Mode::Browse: browseTouch(t); break;
             case Mode::PlexLink: if (!t.down && BACK_BUTTON.contains(t.x, t.y)) toLauncher(); break;
             case Mode::Menu: menuTouch(t); break;
+            case Mode::Camera: cameraTouch(t); break;
             case Mode::Running:
                 if (isVideo(session_.id())) playerTouch(t);
                 else if (isRetro(session_.id())) retroTouch(t);
@@ -801,6 +865,28 @@ private:
         button(RETRO_MENU, L"MENU", pressed_ == 401, rgb(60, 50, 110));
     }
 
+    void drawCamera() {
+        canvas_.clear(rgb(10, 10, 14));
+        camCapture_.latest(camPixels_, camW_, camH_, camSerial_);
+        if (camWindow_ && camW_ > 0) canvas_.blit(camPixels_.data(), camW_, camH_, camW_ * 4, CAM_VIEW);
+        else {
+            canvas_.text({0, 150, SCREEN_W, 220}, L"Looking for the Echo window...", 32, rgb(220, 220, 230));
+            canvas_.text({0, 230, SCREEN_W, 280}, L"Start Echo VR with -capturevp2 to see the hand camera here.", 22, rgb(160, 170, 190), false);
+        }
+        uint64_t now = GetTickCount64();
+        if (camFlashAt_ && now - camFlashAt_ < 250)  // shutter flash
+            canvas_.blend(CAM_VIEW, rgb(255, 255, 255), int(200 * (250 - (now - camFlashAt_)) / 250));
+        if (now < camNoteUntil_) {
+            canvas_.blend({0, 0, SCREEN_W, 44}, rgb(0, 0, 0), 170);
+            canvas_.text({16, 0, SCREEN_W - 16, 44}, camNote_, 20, rgb(255, 255, 255), true, 0);
+        }
+        canvas_.fill({0, CAM_VIEW.y1, SCREEN_W, SCREEN_H}, rgb(20, 22, 30));
+        button(CAM_BACK, L"\x25C0  BACK", pressed_ == 700, rgb(50, 58, 84), 22);
+        button(CAM_HAND, camOptions_.rightHand ? L"RIGHT HAND" : L"LEFT HAND", pressed_ == 701, rgb(44, 50, 72), 22);
+        button(CAM_FLIP, camOptions_.selfie ? L"SELFIE" : L"FRONT", pressed_ == 702, rgb(44, 50, 72), 22);
+        button(CAM_SHOT, L"\x25CF  PHOTO", pressed_ == 703, rgb(200, 150, 30), 28);
+    }
+
     void drawMenu() {
         drawApp();
         canvas_.blend({0, 0, SCREEN_W, SCREEN_H}, rgb(0, 0, 0), 190);
@@ -821,6 +907,7 @@ private:
             case Mode::PlexLink: drawPlexLink(); break;
             case Mode::Running: drawApp(); break;
             case Mode::Menu: drawMenu(); break;
+            case Mode::Camera: drawCamera(); break;
         }
         loadingOverlay();
         canvas_.opaque();
@@ -868,6 +955,14 @@ private:
     LONG dockAsked_ = 0, dockSeen_ = 0;
     uint64_t dockAskedAt_ = 0, shotUpAt_ = 0;
     int shotX_ = 0, shotY_ = 0;
+    // CAMERA
+    WindowCapture camCapture_;
+    HWND camWindow_ = nullptr;
+    CameraOptions camOptions_;
+    std::vector<uint8_t> camPixels_;
+    int camW_ = 0, camH_ = 0;
+    uint64_t camSerial_ = 0, lastWindowSearch_ = 0, camFlashAt_ = 0, camNoteUntil_ = 0;
+    std::wstring camNote_;
 };
 
 }  // namespace

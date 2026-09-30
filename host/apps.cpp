@@ -1,4 +1,5 @@
 #include "apps.h"
+#include "camera.h"
 #include <ws2tcpip.h>
 #include <objbase.h>
 #include <cstdio>
@@ -155,6 +156,8 @@ std::vector<AppInfo> listApps(const Config& c) {
     apps.push_back({AppId::Plex, L"PLEX", L"Your Plex server", mpvMissing, rgb(229, 160, 13)});
     apps.push_back({AppId::Reels, L"REELS", L"Instagram Reels", exists(c.edge) ? L"" : L"No Chrome or Edge found - set browser= in arcade.ini",
                     rgb(225, 48, 108)});
+    apps.push_back({AppId::Camera, L"CAMERA", L"Photos from your hand", exists(echoCamDll(c)) ? L"" : L"EchoCam.dll not installed",
+                    rgb(250, 190, 40)});
     // arcade.ini [host] tiles= (comma separated titles, e.g. "reels") keeps only those tiles
     if (!c.tiles.empty()) {
         auto wanted = [&](const std::wstring& title) {

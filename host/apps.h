@@ -9,7 +9,7 @@
 #include <memory>
 #include <thread>
 
-enum class AppId { BalatroSteam, DuckHunt, RetroArch, Doom, Movies, Plex, Reels };
+enum class AppId { BalatroSteam, DuckHunt, RetroArch, Doom, Movies, Plex, Reels, Camera };
 
 struct AppInfo {
     AppId id;
