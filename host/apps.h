@@ -9,7 +9,7 @@
 #include <memory>
 #include <thread>
 
-enum class AppId { BalatroSteam, DuckHunt, RetroArch, Doom, Movies, Plex, Reels, Camera };
+enum class AppId { BalatroSteam, DuckHunt, RetroArch, Doom, Movies, Plex, Reels, Camera, TikTok };
 
 struct AppInfo {
     AppId id;
@@ -19,6 +19,8 @@ struct AppInfo {
 std::vector<AppInfo> listApps(const Config& config);
 bool isRetro(AppId id);
 bool isVideo(AppId id);
+// REELS and TIKTOK: a short-video site in the browser (app mode), driven through DevTools, swiped like a phone
+inline bool isFeed(AppId id) { return id == AppId::Reels || id == AppId::TikTok; }
 
 // RetroPad button ids (libretro RETRO_DEVICE_ID_JOYPAD_*).
 enum Pad { PadB = 0, PadY, PadSelect, PadStart, PadUp, PadDown, PadLeft, PadRight, PadA, PadX, PadL, PadR, PadL2, PadR2, PadCount };

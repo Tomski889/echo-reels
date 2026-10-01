@@ -42,6 +42,7 @@ struct Config {
     std::wstring lightGun;            // RetroArch light gun from poster shots: "touch" (default), "focus" or "off"
     std::wstring edge;                // Chromium browser for the REELS tile (Chrome, else Edge)
     std::wstring reelsUrl;            // page the REELS tile opens
+    std::wstring tiktokUrl;           // page the TIKTOK tile opens
     std::wstring reelsAudio;          // "default" (Windows default output) or "headset" (route like the other apps)
     std::wstring tiles;               // launcher tiles to show (comma separated titles); empty = all
     int balatroPort = 55410, retroCmdPort = 55355, retroPadPort = 55400, reelsPort = 9335;
