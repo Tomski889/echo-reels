@@ -1,5 +1,5 @@
 # Echo Reels (a fork of Echo Arcade)
-
+BIG CREDITS TO THE BABS- GUY HES AWESOME AND DID 90% OF THISD
 This fork of [kotorvr/echo-arcade](https://github.com/kotorvr/echo-arcade) adds a **REELS** tile: **Instagram Reels on the Echo VR hand tablet**, and a lightweight installer that installs only that tile.
 
 - **Controls:** tap = click (like, unmute, comments), swipe up / down = next / previous reel, ≡ (top left) = menu.
