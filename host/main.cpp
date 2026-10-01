@@ -3,6 +3,7 @@
 // exits when Echo VR goes away.
 #include "apps.h"
 #include "camera.h"
+#include "panel_ipc.h"
 #include <winrt/base.h>
 #include <algorithm>
 #include <functional>
@@ -77,6 +78,10 @@ public:
         loadSettings();
         shared_->hostPid = LONG(GetCurrentProcessId());
         setHandCamera(config_, false);  // the head's view unless the CAMERA tile is open
+        // The side panel's picture for EchoCam.dll (shown beside the tablet while CAMERA is open)
+        panelMap_ = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, DWORD(sizeof(panel_ipc::Shared)), panel_ipc::NAME);
+        if (panelMap_) panel_ = static_cast<panel_ipc::Shared*>(MapViewOfFile(panelMap_, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(panel_ipc::Shared)));
+        if (panel_) { panel_->visible = 0; panel_->magic = panel_ipc::MAGIC; }
     }
 
     ~Host() {
@@ -122,6 +127,8 @@ public:
         }
         session_.kill();
         if (mode_ == Mode::Camera) setHandCamera(config_, false);
+        if (panel_) { panel_->visible = 0; UnmapViewOfFile(panel_); }
+        if (panelMap_) CloseHandle(panelMap_);
     }
 
 private:
@@ -323,6 +330,7 @@ private:
         resetInput();
     }
     void closeCamera() {
+        if (panel_) panel_->visible = 0;
         setHandCamera(config_, false);
         camShotAt_ = 0;
         camCapture_.stop();
@@ -912,6 +920,7 @@ private:
             canvas_.blend({0, 0, SCREEN_W, 44}, rgb(0, 0, 0), 170);
             canvas_.text({16, 0, SCREEN_W - 16, 44}, camNote_, 20, rgb(255, 255, 255), true, 0);
         }
+        publishPanel(now);
         canvas_.fill({0, CAM_VIEW.y1, SCREEN_W, SCREEN_H}, rgb(20, 22, 30));
         wchar_t timer[16];
         if (CAM_TIMERS[camTimer_]) swprintf_s(timer, L"TIMER %ds", CAM_TIMERS[camTimer_]); else wcscpy_s(timer, L"TIMER OFF");
@@ -923,6 +932,42 @@ private:
                              i == CamFreeze && camOptions_.frozen ? rgb(40, 90, 130) : rgb(44, 50, 72);
             button(camButton(i), labels[i], pressed_ == 700 + i, color, 18);
         }
+    }
+
+    // The side panel beside the tablet: the camera view, with the same overlays, at up to ~30 pictures a second
+    void publishPanel(uint64_t now) {
+        if (!panel_) return;
+        bool fresh = camSerial_ != panelSerial_, overlay = (camShotAt_ && camShotAt_ > now) || now < camNoteUntil_ || (camFlashAt_ && now - camFlashAt_ < 250);
+        if (!fresh && !overlay && now - lastPanel_ < 500) { panel_->visible = 1; return; }
+        if (now - lastPanel_ < 33) return;
+        lastPanel_ = now;
+        panelSerial_ = camSerial_;
+        Rect all{0, 0, SCREEN_W, SCREEN_H};
+        panelCanvas_.clear(rgb(10, 10, 14));
+        if (camWindow_ && camW_ > 0) panelCanvas_.blit(camPixels_.data(), camW_, camH_, camW_ * 4, all);
+        else panelCanvas_.text({0, 240, SCREEN_W, 330}, L"Start Echo VR with -capturevp2", 30, rgb(220, 220, 230));
+        if (camFlashAt_ && now - camFlashAt_ < 250) panelCanvas_.blend(all, rgb(255, 255, 255), int(200 * (250 - (now - camFlashAt_)) / 250));
+        if (camShotAt_ && camShotAt_ > now) {
+            wchar_t count[8];
+            swprintf_s(count, L"%llu", (camShotAt_ - now + 999) / 1000);
+            panelCanvas_.blend({412, 190, 612, 380}, rgb(0, 0, 0), 150);
+            panelCanvas_.text({412, 190, 612, 380}, count, 140, rgb(255, 255, 255));
+        }
+        if (camOptions_.frozen) {
+            panelCanvas_.blend({SCREEN_W - 150, 12, SCREEN_W - 12, 52}, rgb(0, 0, 0), 150);
+            panelCanvas_.text({SCREEN_W - 150, 12, SCREEN_W - 12, 52}, L"FROZEN", 20, rgb(120, 200, 255));
+        }
+        if (now < camNoteUntil_) {
+            panelCanvas_.blend({0, SCREEN_H - 44, SCREEN_W, SCREEN_H}, rgb(0, 0, 0), 170);
+            panelCanvas_.text({16, SCREEN_H - 44, SCREEN_W - 16, SCREEN_H}, camNote_, 20, rgb(255, 255, 255), true, 0);
+        }
+        panelCanvas_.opaque();
+        LONG back = (panel_->front + 1) & 1;
+        memcpy(panel_->frames[back], panelCanvas_.pixels(), sizeof(panel_->frames[back]));
+        MemoryBarrier();
+        panel_->front = back;
+        InterlockedIncrement(&panel_->serial);
+        panel_->visible = 1;
     }
 
     void drawMenu() {
@@ -1001,6 +1046,11 @@ private:
     int camW_ = 0, camH_ = 0;
     uint64_t camSerial_ = 0, lastWindowSearch_ = 0, camFlashAt_ = 0, camNoteUntil_ = 0, camShotAt_ = 0;
     int camTimer_ = 0;  // index into CAM_TIMERS
+    // Side panel (EchoCam.dll draws it beside the tablet)
+    HANDLE panelMap_ = nullptr;
+    panel_ipc::Shared* panel_ = nullptr;
+    Canvas panelCanvas_;
+    uint64_t panelSerial_ = 0, lastPanel_ = 0;
     std::wstring camNote_;
 };
 
