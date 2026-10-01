@@ -86,7 +86,9 @@ int CdpInput::loginShown(int port) {
     size_t start = list.rfind('{', at), end = list.find('}', at);
     if (start == std::string::npos || end == std::string::npos) return -1;
     std::string entry = list.substr(start, end - start);
-    for (const char* marker : {"/accounts/login", "/accounts/onetap", "/accounts/emailsignup", "/challenge", "/two_factor", "\"title\": \"Login"})
+    // Instagram's, then TikTok's sign-in pages
+    for (const char* marker : {"/accounts/login", "/accounts/onetap", "/accounts/emailsignup", "/challenge", "/two_factor", "\"title\": \"Login",
+                               "tiktok.com/login", "tiktok.com/signup", "\"title\": \"Log in"})
         if (entry.find(marker) != std::string::npos) return 1;
     return 0;
 }

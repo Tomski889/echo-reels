@@ -664,7 +664,7 @@ private:
             case Mode::Running:
                 if (isVideo(session_.id())) playerTouch(t);
                 else if (isRetro(session_.id())) retroTouch(t);
-                else if (session_.id() == AppId::Reels) reelsTouch(t);
+                else if (isFeed(session_.id())) reelsTouch(t);
                 else balatroTouch(t);
                 break;
         }

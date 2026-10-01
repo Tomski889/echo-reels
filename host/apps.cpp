@@ -156,6 +156,8 @@ std::vector<AppInfo> listApps(const Config& c) {
     apps.push_back({AppId::Plex, L"PLEX", L"Your Plex server", mpvMissing, rgb(229, 160, 13)});
     apps.push_back({AppId::Reels, L"REELS", L"Instagram Reels", exists(c.edge) ? L"" : L"No Chrome or Edge found - set browser= in arcade.ini",
                     rgb(225, 48, 108)});
+    apps.push_back({AppId::TikTok, L"TIKTOK", L"TikTok For You", exists(c.edge) ? L"" : L"No Chrome or Edge found - set browser= in arcade.ini",
+                    rgb(37, 244, 238)});
     apps.push_back({AppId::Camera, L"CAMERA", L"Photos from your hand", exists(echoCamDll(c)) ? L"" : L"EchoCam.dll not installed",
                     rgb(250, 190, 40)});
     // arcade.ini [host] tiles= (comma separated titles, e.g. "reels") keeps only those tiles
@@ -205,14 +207,14 @@ bool Session::launch(AppId id, const std::wstring& target, double startSeconds) 
         setEnv(L"ECHO_ARCADE_STEAM", L"1");
         setEnv(L"ECHO_ARCADE_WIDTH", std::to_wstring(SCREEN_W));
         setEnv(L"ECHO_ARCADE_HEIGHT", std::to_wstring(SCREEN_H));
-    } else if (id == AppId::Reels) {
+    } else if (isFeed(id)) {
         // Chrome (or Edge) in app mode, with its own profile (the Instagram login stays there).
         // Background throttling is off so the reel keeps playing while the window sits behind
         // Echo VR, and the audio stays in the browser process so it can be routed to the headset.
         exe = config_.edge;
         cwd = folderOf(exe);
         std::wstring profile = localAppData() + L"\\EchoArcade\\reels-profile";
-        args = L"--app=\"" + config_.reelsUrl + L"\" --user-data-dir=\"" + profile + L"\" --remote-debugging-port=" +
+        args = L"--app=\"" + (id == AppId::TikTok ? config_.tiktokUrl : config_.reelsUrl) + L"\" --user-data-dir=\"" + profile + L"\" --remote-debugging-port=" +
                std::to_wstring(config_.reelsPort) + L" --remote-allow-origins=http://127.0.0.1 --no-first-run --no-default-browser-check"
                L" --window-position=0,0 --window-size=" + std::to_wstring(SCREEN_W) + L"," + std::to_wstring(SCREEN_H) +
                L" --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --disable-renderer-backgrounding"
@@ -250,13 +252,13 @@ bool Session::launch(AppId id, const std::wstring& target, double startSeconds) 
     // Route its sound to the headset. Windows refuses (E_INVALIDARG) until the process
     // has started, and moves any sound it already plays when the route is set.
     ResumeThread(pi.hThread);
-    if (audio.id.empty() || (id == AppId::Reels && config_.reelsAudio == L"default")) {
+    if (audio.id.empty() || (isFeed(id) && config_.reelsAudio == L"default")) {
         // Windows default output: clear any device Windows saved for this program earlier (it keeps
         // one per .exe, e.g. from an older arcade route), for the app and every process it starts.
-        hostLog("audio: %ls plays on the Windows default output", id == AppId::Reels ? L"REELS" : L"the app");
+        hostLog("audio: %ls plays on the Windows default output", isFeed(id) ? L"the browser" : L"the app");
         DWORD pid = pi.dwProcessId;
         std::thread([pid] { routeProcessTree(pid, AudioTarget{}); }).detach();
-    } else if (id == AppId::Reels) {
+    } else if (isFeed(id)) {
         // Chrome plays sound from a separate audio process that starts later (and always runs out of
         // process, unlike Edge with the flag above): keep routing the browser and every process it
         // starts until the browser closes.
@@ -306,13 +308,13 @@ void Session::poll() {
     Rect r = contentRect();
     int x = config_.windowMode == L"offscreen" ? -8000 : 0;
     if (window_) {
-        if (id_ == AppId::Reels) reelsWindow(x);
+        if (isFeed(id_)) reelsWindow(x);
         // Apps resize themselves (RetroArch does on content load); keep nudging it back.
         // The REELS window keeps its place in front of or behind other windows (see reelsWindow()).
         uint64_t now = GetTickCount64();
         RECT wr;
         if (!isRetro(id_) && now - lastPlace_ > 1000 && GetWindowRect(window_, &wr) && (wr.right - wr.left != r.w() || wr.bottom - wr.top != r.h())) {
-            UINT flags = SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS | (id_ == AppId::Reels ? SWP_NOZORDER | SWP_NOMOVE : 0);
+            UINT flags = SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS | (isFeed(id_) ? SWP_NOZORDER | SWP_NOMOVE : 0);
             SetWindowPos(window_, HWND_BOTTOM, x, 0, r.w(), r.h(), flags);
             lastPlace_ = now;
         }
@@ -337,7 +339,7 @@ void Session::poll() {
         return;
     }
     // REELS keeps its taskbar button, so the browser (and Instagram's login) can be reached from the desktop.
-    std::thread([hwnd, x, w = r.w(), h = r.h(), taskbar = id_ == AppId::Reels] {
+    std::thread([hwnd, x, w = r.w(), h = r.h(), taskbar = isFeed(id_)] {
         LONG style = GetWindowLongW(hwnd, GWL_STYLE);
         SetWindowLongW(hwnd, GWL_STYLE, (style & ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX)) | WS_POPUP);
         LONG ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
@@ -393,7 +395,7 @@ void Session::quit() {
     quitAt_ = GetTickCount64();
     if (isRetro(id_)) command("QUIT");
     else if (isVideo(id_)) mpv_.command(R"(["quit"])");
-    else if (id_ == AppId::Reels) { reels_.disconnect(); if (window_) PostMessageW(window_, WM_CLOSE, 0, 0); }
+    else if (isFeed(id_)) { reels_.disconnect(); if (window_) PostMessageW(window_, WM_CLOSE, 0, 0); }
     else {
         const char msg[] = "quit";
         send(config_.balatroPort, msg, int(sizeof(msg) - 1));
