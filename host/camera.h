@@ -12,6 +12,7 @@ struct CameraOptions {
     bool frozen = false;     // stays where it is in the world (a tripod)
     int smoothing = 0;       // index into CAMERA_SMOOTHING (EchoCam eases the camera like a gimbal)
     int resolution = 0;      // index into CAMERA_RESOLUTIONS (the Echo window's size = the camera picture's)
+    bool hideTablet = true;  // the tablet is left out of the camera's picture (EchoCam)
 };
 constexpr float CAMERA_SMOOTHING[] = {0.f, .25f, .5f, .8f};
 constexpr const wchar_t* CAMERA_SMOOTHING_NAMES[] = {L"OFF", L"LOW", L"MED", L"HIGH"};

@@ -40,9 +40,9 @@ const Rect SEEK_BAR{20, 448, 1004, 476};
 enum CamButton { CamBack, CamHand, CamFlip, CamCloser, CamFurther, CamFreeze, CamTimer, CamShot };
 constexpr int CAM_TIMERS[] = {0, 3, 5, 10};  // self-timer choices, seconds
 // The tablet's CAMERA screen is its settings (the picture is on the side panel): one row per setting
-enum CamSetting { SetSource, SetView, SetReach, SetSmooth, SetResolution, SetTimer, CAM_SETTINGS };
-constexpr const wchar_t* CAM_SETTING_NAMES[CAM_SETTINGS] = {L"SOURCE", L"VIEW", L"REACH", L"SMOOTHING", L"RESOLUTION", L"TIMER"};
-constexpr int CAM_ROW_Y = 70, CAM_ROW_H = 66, CAM_LABEL_W = 230;
+enum CamSetting { SetSource, SetView, SetReach, SetSmooth, SetResolution, SetTimer, SetTablet, CAM_SETTINGS };
+constexpr const wchar_t* CAM_SETTING_NAMES[CAM_SETTINGS] = {L"SOURCE", L"VIEW", L"REACH", L"SMOOTHING", L"RESOLUTION", L"TIMER", L"TABLET IN SHOT"};
+constexpr int CAM_ROW_Y = 66, CAM_ROW_H = 57, CAM_LABEL_W = 230;
 const Rect CAM_BACK{12, 474, 232, 562}, CAM_FREEZE{402, 474, 622, 562}, CAM_PHOTO{792, 474, 1012, 562};
 constexpr int PLAYER_BUTTONS = 10;
 const wchar_t* const PLAYER_LABELS[PLAYER_BUTTONS] = {L"-30s", L"-10s", L"PLAY", L"+10s", L"+30s", L"VOL -", L"VOL +", L"SUBS", L"AUDIO", L"CLOSE"};
@@ -401,6 +401,7 @@ private:
             case SetReach: { wchar_t v[24]; swprintf_s(v, L"%.2f m", camOptions_.reach); return {L"\x2212", v, L"+"}; }
             case SetSmooth: return {CAMERA_SMOOTHING_NAMES, CAMERA_SMOOTHING_NAMES + std::size(CAMERA_SMOOTHING_NAMES)};
             case SetResolution: { std::vector<std::wstring> v; for (auto& r : CAMERA_RESOLUTIONS) v.push_back(r.name); return v; }
+            case SetTablet: return {L"SHOWN", L"HIDDEN"};
             default: return {L"OFF", L"3s", L"5s", L"10s"};
         }
     }
@@ -411,6 +412,7 @@ private:
             case SetReach: return 1;
             case SetSmooth: return camOptions_.smoothing;
             case SetResolution: return camOptions_.resolution;
+            case SetTablet: return camOptions_.hideTablet ? 1 : 0;
             default: return camTimer_;
         }
     }
@@ -432,6 +434,7 @@ private:
                 applyCameraResolution(camWindow_, i);
                 cameraNote(L"Camera resolution: " + std::wstring(CAMERA_RESOLUTIONS[i].name));
                 break;
+            case SetTablet: camOptions_.hideTablet = i == 1; break;
             default: camTimer_ = i; return;
         }
         saveCameraOptions(config_, camOptions_);
