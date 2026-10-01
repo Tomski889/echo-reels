@@ -51,9 +51,11 @@ Config loadConfig();
 // ---- 2D drawing into the 1024x574 BGRA screen (GDI for text) ----
 class Canvas {
 public:
-    Canvas();
+    explicit Canvas(int w = SCREEN_W, int h = SCREEN_H);
     ~Canvas();
     uint32_t* pixels() { return px_; }
+    int width() const { return w_; }
+    int height() const { return h_; }
     void clear(uint32_t color);
     void fill(Rect r, uint32_t color);
     void blend(Rect r, uint32_t color, int alpha);  // alpha 0..255
@@ -65,6 +67,7 @@ private:
     HDC dc_ = nullptr;
     HBITMAP bmp_ = nullptr, old_ = nullptr;
     uint32_t* px_ = nullptr;
+    int w_, h_;
 };
 
 constexpr uint32_t rgb(int r, int g, int b) { return 0xff000000u | (uint32_t(r) << 16) | (uint32_t(g) << 8) | uint32_t(b); }

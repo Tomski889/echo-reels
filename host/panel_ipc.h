@@ -8,7 +8,7 @@ namespace panel_ipc
 {
 	constexpr wchar_t NAME[] = L"Local\\EchoCam.Panel";
 	constexpr uint32_t MAGIC = 0x4C4E4150; // "PANL"
-	constexpr int WIDTH = 1024, HEIGHT = 574;
+	constexpr int WIDTH = 576, HEIGHT = 768; // portrait 3:4, like a tablet held upright
 
 	struct Shared
 	{

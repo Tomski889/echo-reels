@@ -113,11 +113,11 @@ Touch touchFromCell(int cell, bool down, int cols, int rows) {
     return {cell, down, int((c + .5f) * SCREEN_W / cols), int((r + .5f) * SCREEN_H / rows)};
 }
 
-Canvas::Canvas() {
+Canvas::Canvas(int w, int h) : w_(w), h_(h) {
     BITMAPINFO bi{};
     bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
-    bi.bmiHeader.biWidth = SCREEN_W;
-    bi.bmiHeader.biHeight = -SCREEN_H;  // top-down, matches the texture
+    bi.bmiHeader.biWidth = w_;
+    bi.bmiHeader.biHeight = -h_;  // top-down, matches the texture
     bi.bmiHeader.biPlanes = 1;
     bi.bmiHeader.biBitCount = 32;
     dc_ = CreateCompatibleDC(nullptr);
@@ -132,23 +132,23 @@ Canvas::~Canvas() {
     DeleteDC(dc_);
 }
 
-static Rect clip(Rect r) {
-    return {std::max(r.x0, 0), std::max(r.y0, 0), std::min(r.x1, SCREEN_W), std::min(r.y1, SCREEN_H)};
+static Rect clip(Rect r, int w, int h) {
+    return {std::max(r.x0, 0), std::max(r.y0, 0), std::min(r.x1, w), std::min(r.y1, h)};
 }
 
-void Canvas::clear(uint32_t color) { std::fill(px_, px_ + SCREEN_W * SCREEN_H, color); }
+void Canvas::clear(uint32_t color) { std::fill(px_, px_ + w_ * h_, color); }
 
 void Canvas::fill(Rect r, uint32_t color) {
-    r = clip(r);
-    for (int y = r.y0; y < r.y1; y++) std::fill(px_ + y * SCREEN_W + r.x0, px_ + y * SCREEN_W + r.x1, color);
+    r = clip(r, w_, h_);
+    for (int y = r.y0; y < r.y1; y++) std::fill(px_ + y * w_ + r.x0, px_ + y * w_ + r.x1, color);
 }
 
 void Canvas::blend(Rect r, uint32_t color, int a) {
-    r = clip(r);
+    r = clip(r, w_, h_);
     uint32_t cr = (color >> 16) & 255, cg = (color >> 8) & 255, cb = color & 255;
     for (int y = r.y0; y < r.y1; y++)
         for (int x = r.x0; x < r.x1; x++) {
-            uint32_t& p = px_[y * SCREEN_W + x];
+            uint32_t& p = px_[y * w_ + x];
             uint32_t pr = (p >> 16) & 255, pg = (p >> 8) & 255, pb = p & 255;
             p = rgb((pr * (255 - a) + cr * a) / 255, (pg * (255 - a) + cg * a) / 255, (pb * (255 - a) + cb * a) / 255);
         }
@@ -190,21 +190,21 @@ void Canvas::blit(const uint8_t* src, int sw, int sh, int pitch, Rect dst) {
     if (w == sw && h == sh) {
         for (int y = 0; y < h; y++) {
             int ty = in.y0 + y;
-            if (ty < 0 || ty >= SCREEN_H) continue;
-            memcpy(px_ + ty * SCREEN_W + in.x0, src + size_t(y) * pitch, size_t(w) * 4);
+            if (ty < 0 || ty >= h_) continue;
+            memcpy(px_ + ty * w_ + in.x0, src + size_t(y) * pitch, size_t(w) * 4);
         }
         return;
     }
     float fx = float(sw) / w, fy = float(sh) / h;
     for (int y = 0; y < h; y++) {
         int ty = in.y0 + y;
-        if (ty < 0 || ty >= SCREEN_H) continue;
+        if (ty < 0 || ty >= h_) continue;
         float syf = std::max(0.f, (y + .5f) * fy - .5f);
         int sy0 = std::min(int(syf), sh - 1), sy1 = std::min(sy0 + 1, sh - 1);
         uint32_t wy = uint32_t((syf - sy0) * 256);
         auto r0 = reinterpret_cast<const uint32_t*>(src + size_t(sy0) * pitch);
         auto r1 = reinterpret_cast<const uint32_t*>(src + size_t(sy1) * pitch);
-        uint32_t* out = px_ + ty * SCREEN_W + in.x0;
+        uint32_t* out = px_ + ty * w_ + in.x0;
         for (int x = 0; x < w; x++) {
             float sxf = std::max(0.f, (x + .5f) * fx - .5f);
             int sx0 = std::min(int(sxf), sw - 1), sx1 = std::min(sx0 + 1, sw - 1);
@@ -223,5 +223,5 @@ void Canvas::blit(const uint8_t* src, int sw, int sh, int pitch, Rect dst) {
 
 void Canvas::opaque() {
     GdiFlush();
-    for (int i = 0; i < SCREEN_W * SCREEN_H; i++) px_[i] |= 0xff000000u;
+    for (int i = 0; i < w_ * h_; i++) px_[i] |= 0xff000000u;
 }

@@ -339,6 +339,9 @@ private:
     }
     void pollCamera(uint64_t now) {
         if (camShotAt_ && now >= camShotAt_) { camShotAt_ = 0; takePhoto(); }
+        // Newest camera frame and the side panel, every loop (not only when the tablet screen redraws)
+        if (camWindow_) camCapture_.latest(camPixels_, camW_, camH_, camSerial_);
+        publishPanel(now);
         if (camWindow_ && IsWindow(camWindow_) && camCapture_.active()) return;
         if (now - lastWindowSearch_ < 1000) return;
         lastWindowSearch_ = now;
@@ -897,7 +900,6 @@ private:
 
     void drawCamera() {
         canvas_.clear(rgb(10, 10, 14));
-        camCapture_.latest(camPixels_, camW_, camH_, camSerial_);
         if (camWindow_ && camW_ > 0) canvas_.blit(camPixels_.data(), camW_, camH_, camW_ * 4, CAM_VIEW);
         else {
             canvas_.text({0, 150, SCREEN_W, 220}, L"Looking for the Echo window...", 32, rgb(220, 220, 230));
@@ -920,7 +922,6 @@ private:
             canvas_.blend({0, 0, SCREEN_W, 44}, rgb(0, 0, 0), 170);
             canvas_.text({16, 0, SCREEN_W - 16, 44}, camNote_, 20, rgb(255, 255, 255), true, 0);
         }
-        publishPanel(now);
         canvas_.fill({0, CAM_VIEW.y1, SCREEN_W, SCREEN_H}, rgb(20, 22, 30));
         wchar_t timer[16];
         if (CAM_TIMERS[camTimer_]) swprintf_s(timer, L"TIMER %ds", CAM_TIMERS[camTimer_]); else wcscpy_s(timer, L"TIMER OFF");
@@ -934,36 +935,85 @@ private:
         }
     }
 
-    // The side panel beside the tablet: the camera view, with the same overlays, at up to ~30 pictures a second
+    // The side panel beside the tablet, laid out like a tablet held upright: title bar, the camera view, a row of buttons.
+    // Corners are transparent (the compositor blends the panel's alpha).
+    static constexpr int PANEL_W = panel_ipc::WIDTH, PANEL_H = panel_ipc::HEIGHT, PANEL_RADIUS = 34, PANEL_BORDER = 6;
+    static constexpr Rect PANEL_TITLE{0, 0, PANEL_W, 92}, PANEL_VIEW{18, 92, PANEL_W - 18, 626}, PANEL_BAR{0, 626, PANEL_W, PANEL_H};
+    static Rect panelButton(int i) { return {38 + i * 130, 650, 38 + i * 130 + 90, 740}; }
+
+    void roundPanel() {
+        uint32_t* px = panelCanvas_.pixels();
+        const uint32_t border = rgb(200, 196, 188);
+        for (int y = 0; y < PANEL_H; y++)
+            for (int x = 0; x < PANEL_W; x++) {
+                // distance outside the rounded rectangle's inner corner circles
+                int cx = x < PANEL_RADIUS ? PANEL_RADIUS : x >= PANEL_W - PANEL_RADIUS ? PANEL_W - 1 - PANEL_RADIUS : x;
+                int cy = y < PANEL_RADIUS ? PANEL_RADIUS : y >= PANEL_H - PANEL_RADIUS ? PANEL_H - 1 - PANEL_RADIUS : y;
+                float d = std::sqrt(float((x - cx) * (x - cx) + (y - cy) * (y - cy)));
+                bool edge = x < PANEL_BORDER || y < PANEL_BORDER || x >= PANEL_W - PANEL_BORDER || y >= PANEL_H - PANEL_BORDER;
+                if (d > PANEL_RADIUS) px[y * PANEL_W + x] = 0;  // outside: transparent
+                else if (d > PANEL_RADIUS - PANEL_BORDER || (edge && (cx == x || cy == y))) px[y * PANEL_W + x] = border;
+            }
+    }
+
+    // Up to ~72 pictures a second: each new camera frame, and overlays as they change
     void publishPanel(uint64_t now) {
         if (!panel_) return;
         bool fresh = camSerial_ != panelSerial_, overlay = (camShotAt_ && camShotAt_ > now) || now < camNoteUntil_ || (camFlashAt_ && now - camFlashAt_ < 250);
-        if (!fresh && !overlay && now - lastPanel_ < 500) { panel_->visible = 1; return; }
-        if (now - lastPanel_ < 33) return;
+        if ((!fresh && !overlay && now - lastPanel_ < 500) || now - lastPanel_ < 13) { panel_->visible = 1; return; }
         lastPanel_ = now;
         panelSerial_ = camSerial_;
-        Rect all{0, 0, SCREEN_W, SCREEN_H};
-        panelCanvas_.clear(rgb(10, 10, 14));
-        if (camWindow_ && camW_ > 0) panelCanvas_.blit(camPixels_.data(), camW_, camH_, camW_ * 4, all);
-        else panelCanvas_.text({0, 240, SCREEN_W, 330}, L"Start Echo VR with -capturevp2", 30, rgb(220, 220, 230));
-        if (camFlashAt_ && now - camFlashAt_ < 250) panelCanvas_.blend(all, rgb(255, 255, 255), int(200 * (250 - (now - camFlashAt_)) / 250));
+        auto& c = panelCanvas_;
+        c.clear(rgb(30, 30, 32));
+        // Title bar
+        c.fill(PANEL_TITLE, rgb(36, 35, 34));
+        c.text({34, 0, PANEL_W - 110, PANEL_TITLE.y1}, L"Camera", 48, rgb(222, 214, 190), false, 0);
+        Rect close{PANEL_W - 96, 22, PANEL_W - 40, 78};
+        c.fill(close, rgb(20, 20, 20));
+        c.frame(close, rgb(235, 235, 235), 3);
+        c.text(close, L"\x2715", 30, rgb(240, 240, 240));
+        // Camera view: fills its area (cropped to the area's shape)
+        c.fill(PANEL_VIEW, rgb(10, 10, 14));
+        if (camWindow_ && camW_ > 0) {
+            float want = float(PANEL_VIEW.w()) / PANEL_VIEW.h(), have = float(camW_) / camH_;
+            int cw = camW_, ch = camH_, cx = 0, cy = 0;
+            if (have > want) { cw = int(camH_ * want); cx = (camW_ - cw) / 2; }
+            else { ch = int(camW_ / want); cy = (camH_ - ch) / 2; }
+            c.blit(camPixels_.data() + (size_t(cy) * camW_ + cx) * 4, cw, ch, camW_ * 4, PANEL_VIEW);
+        } else {
+            c.text({PANEL_VIEW.x0, 300, PANEL_VIEW.x1, 360}, L"Start Echo VR", 30, rgb(220, 220, 230));
+            c.text({PANEL_VIEW.x0, 360, PANEL_VIEW.x1, 410}, L"with -capturevp2", 26, rgb(160, 170, 190), false);
+        }
+        if (camFlashAt_ && now - camFlashAt_ < 250) c.blend(PANEL_VIEW, rgb(255, 255, 255), int(200 * (250 - (now - camFlashAt_)) / 250));
         if (camShotAt_ && camShotAt_ > now) {
             wchar_t count[8];
             swprintf_s(count, L"%llu", (camShotAt_ - now + 999) / 1000);
-            panelCanvas_.blend({412, 190, 612, 380}, rgb(0, 0, 0), 150);
-            panelCanvas_.text({412, 190, 612, 380}, count, 140, rgb(255, 255, 255));
+            c.blend({188, 260, 388, 450}, rgb(0, 0, 0), 150);
+            c.text({188, 260, 388, 450}, count, 140, rgb(255, 255, 255));
         }
         if (camOptions_.frozen) {
-            panelCanvas_.blend({SCREEN_W - 150, 12, SCREEN_W - 12, 52}, rgb(0, 0, 0), 150);
-            panelCanvas_.text({SCREEN_W - 150, 12, SCREEN_W - 12, 52}, L"FROZEN", 20, rgb(120, 200, 255));
+            c.blend({PANEL_VIEW.x1 - 140, PANEL_VIEW.y0 + 12, PANEL_VIEW.x1 - 12, PANEL_VIEW.y0 + 52}, rgb(0, 0, 0), 150);
+            c.text({PANEL_VIEW.x1 - 140, PANEL_VIEW.y0 + 12, PANEL_VIEW.x1 - 12, PANEL_VIEW.y0 + 52}, L"FROZEN", 20, rgb(120, 200, 255));
         }
         if (now < camNoteUntil_) {
-            panelCanvas_.blend({0, SCREEN_H - 44, SCREEN_W, SCREEN_H}, rgb(0, 0, 0), 170);
-            panelCanvas_.text({16, SCREEN_H - 44, SCREEN_W - 16, SCREEN_H}, camNote_, 20, rgb(255, 255, 255), true, 0);
+            c.blend({PANEL_VIEW.x0, PANEL_VIEW.y1 - 44, PANEL_VIEW.x1, PANEL_VIEW.y1}, rgb(0, 0, 0), 170);
+            c.text({PANEL_VIEW.x0 + 12, PANEL_VIEW.y1 - 44, PANEL_VIEW.x1 - 12, PANEL_VIEW.y1}, camNote_, 18, rgb(255, 255, 255), true, 0);
         }
-        panelCanvas_.opaque();
+        // Button row (stand-in icons; the shutter is live through the tablet's PHOTO for now)
+        c.fill(PANEL_BAR, rgb(36, 35, 34));
+        struct Icon { const wchar_t* label; uint32_t back, fore; };
+        const Icon icons[4] = {{L"TT", rgb(0, 0, 0), rgb(255, 255, 255)}, {L"IG", rgb(214, 41, 118), rgb(255, 255, 255)},
+                               {L"G", rgb(255, 255, 255), rgb(66, 133, 244)}, {L"\x25CF", rgb(200, 200, 205), rgb(40, 40, 48)}};
+        for (int i = 0; i < 4; i++) {
+            Rect r = panelButton(i);
+            c.fill(r, icons[i].back);
+            c.frame(r, rgb(70, 70, 76), 2);
+            c.text(r, icons[i].label, i == 3 ? 52 : 34, icons[i].fore);
+        }
+        c.opaque();
+        roundPanel();
         LONG back = (panel_->front + 1) & 1;
-        memcpy(panel_->frames[back], panelCanvas_.pixels(), sizeof(panel_->frames[back]));
+        memcpy(panel_->frames[back], c.pixels(), sizeof(panel_->frames[back]));
         MemoryBarrier();
         panel_->front = back;
         InterlockedIncrement(&panel_->serial);
@@ -1049,7 +1099,7 @@ private:
     // Side panel (EchoCam.dll draws it beside the tablet)
     HANDLE panelMap_ = nullptr;
     panel_ipc::Shared* panel_ = nullptr;
-    Canvas panelCanvas_;
+    Canvas panelCanvas_{panel_ipc::WIDTH, panel_ipc::HEIGHT};
     uint64_t panelSerial_ = 0, lastPanel_ = 0;
     std::wstring camNote_;
 };
