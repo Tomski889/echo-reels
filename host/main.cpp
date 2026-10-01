@@ -81,7 +81,7 @@ public:
         // The side panel's picture for EchoCam.dll (shown beside the tablet while CAMERA is open)
         panelMap_ = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, DWORD(sizeof(panel_ipc::Shared)), panel_ipc::NAME);
         if (panelMap_) panel_ = static_cast<panel_ipc::Shared*>(MapViewOfFile(panelMap_, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(panel_ipc::Shared)));
-        if (panel_) { panel_->visible = 0; panel_->magic = panel_ipc::MAGIC; }
+        if (panel_) { panel_->visible = 0; panel_->magic = panel_ipc::MAGIC; panelRead_ = panel_->touchWrite; }
     }
 
     ~Host() {
@@ -341,6 +341,8 @@ private:
         if (camShotAt_ && now >= camShotAt_) { camShotAt_ = 0; takePhoto(); }
         // Newest camera frame and the side panel, every loop (not only when the tablet screen redraws)
         if (camWindow_) camCapture_.latest(camPixels_, camW_, camH_, camSerial_);
+        readPanelTouches();
+        if (mode_ != Mode::Camera) return;  // closed by the panel's close button
         publishPanel(now);
         if (camWindow_ && IsWindow(camWindow_) && camCapture_.active()) return;
         if (now - lastWindowSearch_ < 1000) return;
@@ -370,10 +372,9 @@ private:
             pending_.push_back([this, name] { cameraNote(name.empty() ? L"Could not save the photo" : L"Saved Pictures\\Echo\\" + name); });
         });
     }
-    void cameraTouch(const Touch& t) {
-        for (int i = 0; i < CAM_BUTTONS; i++) {
-            if (!tapped(t, 700 + i, camButton(i))) continue;
-            switch (i) {
+    // A camera control was used, on the tablet or on the side panel
+    void cameraButton(int i) {
+        switch (i) {
                 case CamBack: closeCamera(); return;
                 case CamHand: camOptions_.rightHand = !camOptions_.rightHand; break;
                 case CamFlip: camOptions_.selfie = !camOptions_.selfie; break;
@@ -386,11 +387,56 @@ private:
                     if (CAM_TIMERS[camTimer_] == 0) takePhoto();
                     else camShotAt_ = GetTickCount64() + uint64_t(CAM_TIMERS[camTimer_]) * 1000;
                     return;
-            }
-            saveCameraOptions(config_, camOptions_);
-            return;
         }
+        saveCameraOptions(config_, camOptions_);
+    }
+    void cameraTouch(const Touch& t) {
+        for (int i = 0; i < CAM_BUTTONS; i++)
+            if (tapped(t, 700 + i, camButton(i))) { cameraButton(i); return; }
         if (!t.down) pressed_ = -1;
+    }
+    std::wstring cameraLabel(int i) const {
+        switch (i) {
+            case CamBack: return L"\x25C0 BACK";
+            case CamHand: return camOptions_.rightHand ? L"RIGHT HAND" : L"LEFT HAND";
+            case CamFlip: return camOptions_.selfie ? L"SELFIE" : L"FRONT";
+            case CamCloser: return L"\x2212";
+            case CamFurther: return L"+";
+            case CamFreeze: return camOptions_.frozen ? L"UNFREEZE" : L"FREEZE";
+            case CamTimer: {
+                wchar_t timer[16];
+                if (CAM_TIMERS[camTimer_]) swprintf_s(timer, L"TIMER %ds", CAM_TIMERS[camTimer_]); else wcscpy_s(timer, L"TIMER OFF");
+                return timer;
+            }
+            default: return camShotAt_ ? L"CANCEL" : L"\x25CF PHOTO";
+        }
+    }
+    uint32_t cameraColor(int i) const {
+        return i == CamBack ? rgb(50, 58, 84) : i == CamShot ? rgb(200, 150, 30) :
+               i == CamFreeze && camOptions_.frozen ? rgb(40, 90, 130) : rgb(44, 50, 72);
+    }
+
+    // Side panel touches (EchoCam reports the fingertip): a press on a control, then its release, uses it
+    void readPanelTouches() {
+        if (!panel_) return;
+        LONG write = panel_->touchWrite;
+        if (write - panelRead_ > LONG(panel_ipc::TOUCHES)) panelRead_ = write - LONG(panel_ipc::TOUCHES);
+        while (panelRead_ != write) {
+            auto& t = panel_->touches[uint32_t(panelRead_) % panel_ipc::TOUCHES];
+            if (t.seq != panelRead_ + 1) break;  // still being written
+            MemoryBarrier();
+            int x = int(t.x), y = int(t.y);
+            if (t.down) {
+                panelPressed_ = -1;
+                for (int i = 0; i < PANEL_CONTROLS; i++)
+                    if (grow(panelControl(i), 8).contains(x, y)) panelPressed_ = i;
+            } else if (panelPressed_ >= 0) {
+                int i = panelPressed_;
+                panelPressed_ = -1;
+                if (mode_ == Mode::Camera) cameraButton(PANEL_ACTIONS[i]);
+            }
+            panelRead_++;
+        }
     }
 
     // ------------------------------------------------ touches
@@ -923,23 +969,26 @@ private:
             canvas_.text({16, 0, SCREEN_W - 16, 44}, camNote_, 20, rgb(255, 255, 255), true, 0);
         }
         canvas_.fill({0, CAM_VIEW.y1, SCREEN_W, SCREEN_H}, rgb(20, 22, 30));
-        wchar_t timer[16];
-        if (CAM_TIMERS[camTimer_]) swprintf_s(timer, L"TIMER %ds", CAM_TIMERS[camTimer_]); else wcscpy_s(timer, L"TIMER OFF");
-        const std::wstring labels[CAM_BUTTONS] = {L"\x25C0 BACK", camOptions_.rightHand ? L"RIGHT" : L"LEFT", camOptions_.selfie ? L"SELFIE" : L"FRONT",
-                                                  L"CLOSER", L"FURTHER", camOptions_.frozen ? L"UNFREEZE" : L"FREEZE", timer,
-                                                  camShotAt_ ? L"CANCEL" : L"\x25CF PHOTO"};
         for (int i = 0; i < CAM_BUTTONS; i++) {
-            uint32_t color = i == CamBack ? rgb(50, 58, 84) : i == CamShot ? rgb(200, 150, 30) :
-                             i == CamFreeze && camOptions_.frozen ? rgb(40, 90, 130) : rgb(44, 50, 72);
-            button(camButton(i), labels[i], pressed_ == 700 + i, color, 18);
+            std::wstring label = i == CamCloser ? L"CLOSER" : i == CamFurther ? L"FURTHER" : i == CamHand ? (camOptions_.rightHand ? L"RIGHT" : L"LEFT") : cameraLabel(i);
+            button(camButton(i), label, pressed_ == 700 + i, cameraColor(i), 18);
         }
     }
 
     // The side panel beside the tablet, laid out like a tablet held upright: title bar, the camera view, a row of buttons.
     // Corners are transparent (the compositor blends the panel's alpha).
     static constexpr int PANEL_W = panel_ipc::WIDTH, PANEL_H = panel_ipc::HEIGHT, PANEL_RADIUS = 34, PANEL_BORDER = 6;
-    static constexpr Rect PANEL_TITLE{0, 0, PANEL_W, 92}, PANEL_VIEW{18, 92, PANEL_W - 18, 626}, PANEL_BAR{0, 626, PANEL_W, PANEL_H};
-    static Rect panelButton(int i) { return {38 + i * 130, 650, 38 + i * 130 + 90, 740}; }
+    static constexpr Rect PANEL_TITLE{0, 0, PANEL_W, 92}, PANEL_VIEW{18, 92, PANEL_W - 18, 556}, PANEL_BAR{0, 556, PANEL_W, PANEL_H};
+    // Controls: the title's close button, then two rows under the view
+    static constexpr int PANEL_CONTROLS = 8;
+    static constexpr int PANEL_ACTIONS[PANEL_CONTROLS] = {CamBack, CamHand, CamFlip, CamFreeze, CamCloser, CamFurther, CamTimer, CamShot};
+    static Rect panelControl(int i) {
+        static constexpr Rect rects[PANEL_CONTROLS] = {
+            {PANEL_W - 96, 18, PANEL_W - 30, 78},
+            {24, 572, 192, 650}, {204, 572, 372, 650}, {384, 572, 552, 650},
+            {24, 664, 116, 748}, {128, 664, 220, 748}, {232, 664, 376, 748}, {388, 664, 552, 748}};
+        return rects[i];
+    }
 
     void roundPanel() {
         uint32_t* px = panelCanvas_.pixels();
@@ -959,7 +1008,8 @@ private:
     // Up to ~72 pictures a second: each new camera frame, and overlays as they change
     void publishPanel(uint64_t now) {
         if (!panel_) return;
-        bool fresh = camSerial_ != panelSerial_, overlay = (camShotAt_ && camShotAt_ > now) || now < camNoteUntil_ || (camFlashAt_ && now - camFlashAt_ < 250);
+        bool fresh = camSerial_ != panelSerial_, overlay = (camShotAt_ && camShotAt_ > now) || now < camNoteUntil_ || (camFlashAt_ && now - camFlashAt_ < 250) ||
+                     panel_->hover || panelPressed_ >= 0;
         if ((!fresh && !overlay && now - lastPanel_ < 500) || now - lastPanel_ < 13) { panel_->visible = 1; return; }
         lastPanel_ = now;
         panelSerial_ = camSerial_;
@@ -968,10 +1018,10 @@ private:
         // Title bar
         c.fill(PANEL_TITLE, rgb(36, 35, 34));
         c.text({34, 0, PANEL_W - 110, PANEL_TITLE.y1}, L"Camera", 48, rgb(222, 214, 190), false, 0);
-        Rect close{PANEL_W - 96, 22, PANEL_W - 40, 78};
-        c.fill(close, rgb(20, 20, 20));
+        Rect close = panelControl(0);
+        c.fill(close, panelPressed_ == 0 ? rgb(250, 250, 250) : rgb(20, 20, 20));
         c.frame(close, rgb(235, 235, 235), 3);
-        c.text(close, L"\x2715", 30, rgb(240, 240, 240));
+        c.text(close, L"\x2715", 30, panelPressed_ == 0 ? rgb(20, 20, 20) : rgb(240, 240, 240));
         // Camera view: fills its area (cropped to the area's shape)
         c.fill(PANEL_VIEW, rgb(10, 10, 14));
         if (camWindow_ && camW_ > 0) {
@@ -999,16 +1049,20 @@ private:
             c.blend({PANEL_VIEW.x0, PANEL_VIEW.y1 - 44, PANEL_VIEW.x1, PANEL_VIEW.y1}, rgb(0, 0, 0), 170);
             c.text({PANEL_VIEW.x0 + 12, PANEL_VIEW.y1 - 44, PANEL_VIEW.x1 - 12, PANEL_VIEW.y1}, camNote_, 18, rgb(255, 255, 255), true, 0);
         }
-        // Button row (stand-in icons; the shutter is live through the tablet's PHOTO for now)
+        // Controls
         c.fill(PANEL_BAR, rgb(36, 35, 34));
-        struct Icon { const wchar_t* label; uint32_t back, fore; };
-        const Icon icons[4] = {{L"TT", rgb(0, 0, 0), rgb(255, 255, 255)}, {L"IG", rgb(214, 41, 118), rgb(255, 255, 255)},
-                               {L"G", rgb(255, 255, 255), rgb(66, 133, 244)}, {L"\x25CF", rgb(200, 200, 205), rgb(40, 40, 48)}};
-        for (int i = 0; i < 4; i++) {
-            Rect r = panelButton(i);
-            c.fill(r, icons[i].back);
-            c.frame(r, rgb(70, 70, 76), 2);
-            c.text(r, icons[i].label, i == 3 ? 52 : 34, icons[i].fore);
+        for (int i = 1; i < PANEL_CONTROLS; i++) {
+            Rect r = panelControl(i);
+            bool on = panelPressed_ == i;
+            c.fill(r, on ? rgb(250, 250, 250) : cameraColor(PANEL_ACTIONS[i]));
+            c.frame(r, rgb(90, 96, 120), 2);
+            int size = PANEL_ACTIONS[i] == CamCloser || PANEL_ACTIONS[i] == CamFurther ? 40 : 22;
+            c.text(r, cameraLabel(PANEL_ACTIONS[i]), size, on ? rgb(20, 20, 20) : rgb(240, 240, 245));
+        }
+        if (panel_->hover) {  // where the finger points
+            int x = int(panel_->hoverX), y = int(panel_->hoverY);
+            c.fill({x - 9, y - 9, x + 9, y + 9}, rgb(255, 255, 255));
+            c.fill({x - 5, y - 5, x + 5, y + 5}, rgb(90, 200, 255));
         }
         c.opaque();
         roundPanel();
@@ -1101,6 +1155,8 @@ private:
     panel_ipc::Shared* panel_ = nullptr;
     Canvas panelCanvas_{panel_ipc::WIDTH, panel_ipc::HEIGHT};
     uint64_t panelSerial_ = 0, lastPanel_ = 0;
+    LONG panelRead_ = 0;
+    int panelPressed_ = -1;
     std::wstring camNote_;
 };
 
