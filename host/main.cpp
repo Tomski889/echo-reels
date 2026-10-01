@@ -81,7 +81,7 @@ public:
         // The side panel's picture for EchoCam.dll (shown beside the tablet while CAMERA is open)
         panelMap_ = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, DWORD(sizeof(panel_ipc::Shared)), panel_ipc::NAME);
         if (panelMap_) panel_ = static_cast<panel_ipc::Shared*>(MapViewOfFile(panelMap_, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(panel_ipc::Shared)));
-        if (panel_) { panel_->visible = 0; panel_->magic = panel_ipc::MAGIC; panelRead_ = panel_->touchWrite; }
+        if (panel_) { panel_->visible = 0; panel_->magic = panel_ipc::MAGIC; panelRead_ = panel_->touchWrite; fitSeen_ = panel_->calibrateDone; }
     }
 
     ~Host() {
@@ -433,7 +433,8 @@ private:
             } else if (panelPressed_ >= 0) {
                 int i = panelPressed_;
                 panelPressed_ = -1;
-                if (mode_ == Mode::Camera) cameraButton(PANEL_ACTIONS[i]);
+                if (i == PANEL_FIT) InterlockedIncrement(&panel_->calibrateRequest);
+                else if (mode_ == Mode::Camera) cameraButton(PANEL_ACTIONS[i]);
             }
             panelRead_++;
         }
@@ -980,13 +981,14 @@ private:
     static constexpr int PANEL_W = panel_ipc::WIDTH, PANEL_H = panel_ipc::HEIGHT, PANEL_RADIUS = 34, PANEL_BORDER = 6;
     static constexpr Rect PANEL_TITLE{0, 0, PANEL_W, 92}, PANEL_VIEW{18, 92, PANEL_W - 18, 556}, PANEL_BAR{0, 556, PANEL_W, PANEL_H};
     // Controls: the title's close button, then two rows under the view
-    static constexpr int PANEL_CONTROLS = 8;
-    static constexpr int PANEL_ACTIONS[PANEL_CONTROLS] = {CamBack, CamHand, CamFlip, CamFreeze, CamCloser, CamFurther, CamTimer, CamShot};
+    static constexpr int PANEL_CONTROLS = 9, PANEL_FIT = 8;  // FIT: line the panel up with the tablet (EchoCam)
+    static constexpr int PANEL_ACTIONS[PANEL_CONTROLS] = {CamBack, CamHand, CamFlip, CamFreeze, CamCloser, CamFurther, CamTimer, CamShot, -1};
     static Rect panelControl(int i) {
         static constexpr Rect rects[PANEL_CONTROLS] = {
             {PANEL_W - 96, 18, PANEL_W - 30, 78},
             {24, 572, 192, 650}, {204, 572, 372, 650}, {384, 572, 552, 650},
-            {24, 664, 116, 748}, {128, 664, 220, 748}, {232, 664, 376, 748}, {388, 664, 552, 748}};
+            {24, 664, 116, 748}, {128, 664, 220, 748}, {232, 664, 376, 748}, {388, 664, 552, 748},
+            {PANEL_W - 200, 18, PANEL_W - 110, 78}};
         return rects[i];
     }
 
@@ -1009,7 +1011,7 @@ private:
     void publishPanel(uint64_t now) {
         if (!panel_) return;
         bool fresh = camSerial_ != panelSerial_, overlay = (camShotAt_ && camShotAt_ > now) || now < camNoteUntil_ || (camFlashAt_ && now - camFlashAt_ < 250) ||
-                     panel_->hover || panelPressed_ >= 0;
+                     panel_->hover || panelPressed_ >= 0 || panel_->calibrateStep > 0 || panel_->calibrateDone != fitSeen_;
         if ((!fresh && !overlay && now - lastPanel_ < 500) || now - lastPanel_ < 13) { panel_->visible = 1; return; }
         lastPanel_ = now;
         panelSerial_ = camSerial_;
@@ -1017,7 +1019,12 @@ private:
         c.clear(rgb(30, 30, 32));
         // Title bar
         c.fill(PANEL_TITLE, rgb(36, 35, 34));
-        c.text({34, 0, PANEL_W - 110, PANEL_TITLE.y1}, L"Camera", 48, rgb(222, 214, 190), false, 0);
+        c.text({34, 0, PANEL_W - 210, PANEL_TITLE.y1}, L"Camera", 48, rgb(222, 214, 190), false, 0);
+        Rect fit = panelControl(PANEL_FIT);
+        bool fitting = panel_->calibrateStep > 0;
+        c.fill(fit, panelPressed_ == PANEL_FIT ? rgb(250, 250, 250) : fitting ? rgb(40, 110, 60) : rgb(20, 20, 20));
+        c.frame(fit, rgb(235, 235, 235), 3);
+        c.text(fit, L"FIT", 24, panelPressed_ == PANEL_FIT ? rgb(20, 20, 20) : rgb(240, 240, 240));
         Rect close = panelControl(0);
         c.fill(close, panelPressed_ == 0 ? rgb(250, 250, 250) : rgb(20, 20, 20));
         c.frame(close, rgb(235, 235, 235), 3);
@@ -1045,6 +1052,17 @@ private:
             c.blend({PANEL_VIEW.x1 - 140, PANEL_VIEW.y0 + 12, PANEL_VIEW.x1 - 12, PANEL_VIEW.y0 + 52}, rgb(0, 0, 0), 150);
             c.text({PANEL_VIEW.x1 - 140, PANEL_VIEW.y0 + 12, PANEL_VIEW.x1 - 12, PANEL_VIEW.y0 + 52}, L"FROZEN", 20, rgb(120, 200, 255));
         }
+        if (fitting) {
+            static const wchar_t* const corner[3] = {L"TOP-LEFT", L"TOP-RIGHT", L"BOTTOM-LEFT"};
+            int step = std::clamp(int(panel_->calibrateStep), 1, 3);
+            c.blend(PANEL_VIEW, rgb(0, 0, 0), 200);
+            c.text({PANEL_VIEW.x0, 150, PANEL_VIEW.x1, 200}, L"FIT TO TABLET  " + std::to_wstring(step) + L"/3", 28, rgb(120, 200, 255));
+            c.text({PANEL_VIEW.x0 + 20, 220, PANEL_VIEW.x1 - 20, 270}, L"Touch the tablet's", 26, rgb(240, 240, 245), false);
+            c.text({PANEL_VIEW.x0 + 20, 270, PANEL_VIEW.x1 - 20, 330}, corner[step - 1], 40, rgb(255, 255, 255));
+            c.text({PANEL_VIEW.x0 + 20, 330, PANEL_VIEW.x1 - 20, 380}, L"corner with your fingertip", 26, rgb(240, 240, 245), false);
+            c.text({PANEL_VIEW.x0 + 20, 390, PANEL_VIEW.x1 - 20, 440}, L"and press A", 30, rgb(255, 210, 90));
+        }
+        if (panel_->calibrateDone != fitSeen_) { fitSeen_ = panel_->calibrateDone; cameraNote(L"Panel fitted to the tablet"); }
         if (now < camNoteUntil_) {
             c.blend({PANEL_VIEW.x0, PANEL_VIEW.y1 - 44, PANEL_VIEW.x1, PANEL_VIEW.y1}, rgb(0, 0, 0), 170);
             c.text({PANEL_VIEW.x0 + 12, PANEL_VIEW.y1 - 44, PANEL_VIEW.x1 - 12, PANEL_VIEW.y1}, camNote_, 18, rgb(255, 255, 255), true, 0);
@@ -1052,6 +1070,7 @@ private:
         // Controls
         c.fill(PANEL_BAR, rgb(36, 35, 34));
         for (int i = 1; i < PANEL_CONTROLS; i++) {
+            if (i == PANEL_FIT) continue;  // drawn in the title bar
             Rect r = panelControl(i);
             bool on = panelPressed_ == i;
             c.fill(r, on ? rgb(250, 250, 250) : cameraColor(PANEL_ACTIONS[i]));
@@ -1155,7 +1174,7 @@ private:
     panel_ipc::Shared* panel_ = nullptr;
     Canvas panelCanvas_{panel_ipc::WIDTH, panel_ipc::HEIGHT};
     uint64_t panelSerial_ = 0, lastPanel_ = 0;
-    LONG panelRead_ = 0;
+    LONG panelRead_ = 0, fitSeen_ = 0;
     int panelPressed_ = -1;
     std::wstring camNote_;
 };

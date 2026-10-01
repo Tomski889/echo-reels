@@ -6,8 +6,8 @@
 
 namespace panel_ipc
 {
-	constexpr wchar_t NAME[] = L"Local\\EchoCam.Panel2";
-	constexpr uint32_t MAGIC = 0x324C4E50; // "PNL2"
+	constexpr wchar_t NAME[] = L"Local\\EchoCam.Panel3";
+	constexpr uint32_t MAGIC = 0x334C4E50; // "PNL3"
 	constexpr int WIDTH = 576, HEIGHT = 768; // portrait 3:4, like a tablet held upright
 	constexpr int TOUCHES = 16;
 
@@ -30,6 +30,9 @@ namespace panel_ipc
 		float hoverX, hoverY;   // where it points, panel pixels
 		volatile LONG touchWrite;
 		Touch touches[TOUCHES];
+		// Fitting the panel to the tablet: ArcadeHost bumps calibrateRequest to start; EchoCam reports the corner it waits for
+		// in calibrateStep (1 top-left, 2 top-right, 3 bottom-left, 0 idle) and bumps calibrateDone when it saved a fit
+		volatile LONG calibrateRequest, calibrateStep, calibrateDone;
 		// ArcadeHost
 		uint32_t frames[2][WIDTH * HEIGHT]; // BGRA, sRGB; alpha 0 = see-through
 	};
