@@ -37,7 +37,9 @@ CameraOptions loadCameraOptions(const Config& config) {
     wchar_t hand[16];
     GetPrivateProfileStringW(L"EchoCam", L"Hand", L"left", hand, 16, ini.c_str());
     CameraOptions o;
-    o.rightHand = _wcsicmp(hand, L"right") == 0;
+    bool right = _wcsicmp(hand, L"right") == 0;
+    o.source = GetPrivateProfileIntW(L"EchoCam", L"OnPanel", 1, ini.c_str()) != 0 && !right ? CameraOptions::Tablet
+               : right ? CameraOptions::RightHand : CameraOptions::LeftHand;
     o.selfie = GetPrivateProfileIntW(L"EchoCam", L"HandYaw", 0, ini.c_str()) == 180;
     wchar_t offset[64];
     GetPrivateProfileStringW(L"EchoCam", L"HandOffset", L"0 0.1 0.25", offset, 64, ini.c_str());
@@ -49,13 +51,16 @@ CameraOptions loadCameraOptions(const Config& config) {
 
 void saveCameraOptions(const Config& config, const CameraOptions& options) {
     std::wstring ini = echoCamIni(config);
-    WritePrivateProfileStringW(L"EchoCam", L"Hand", options.rightHand ? L"right" : L"left", ini.c_str());
+    // EchoCam: the tablet camera is OnPanel with the panel's (left) hand
+    WritePrivateProfileStringW(L"EchoCam", L"Hand", options.source == CameraOptions::RightHand ? L"right" : L"left", ini.c_str());
+    WritePrivateProfileStringW(L"EchoCam", L"OnPanel", options.source == CameraOptions::Tablet ? L"1" : L"0", ini.c_str());
     WritePrivateProfileStringW(L"EchoCam", L"HandYaw", options.selfie ? L"180" : L"0", ini.c_str());
     wchar_t offset[64];
     swprintf_s(offset, L"0 0.1 %.2f", options.reach);  // controller space: +z is forward (tested)
     WritePrivateProfileStringW(L"EchoCam", L"HandOffset", offset, ini.c_str());
     WritePrivateProfileStringW(L"EchoCam", L"Freeze", options.frozen ? L"1" : L"0", ini.c_str());
-    hostLog("camera: %s hand, %s, reach %.2f m%s", options.rightHand ? "right" : "left", options.selfie ? "selfie" : "front",
+    hostLog("camera: %s, %s, reach %.2f m%s", options.source == CameraOptions::Tablet ? "tablet" : options.source == CameraOptions::RightHand ? "right hand" : "left hand",
+            options.selfie ? "selfie" : "front",
             options.reach, options.frozen ? ", frozen" : "");
 }
 

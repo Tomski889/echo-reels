@@ -5,7 +5,8 @@
 #include "host.h"
 
 struct CameraOptions {
-    bool rightHand = false;  // default: the left hand (the tablet hand)
+    enum Source { Tablet, LeftHand, RightHand };
+    Source source = Tablet;  // the side panel's phone camera (default), or a controller
     bool selfie = false;     // looks back at you
     float reach = .25f;      // metres out from the controller (a selfie stick)
     bool frozen = false;     // stays where it is in the world (a tripod)

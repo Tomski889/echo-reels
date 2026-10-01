@@ -376,7 +376,7 @@ private:
     void cameraButton(int i) {
         switch (i) {
                 case CamBack: closeCamera(); return;
-                case CamHand: camOptions_.rightHand = !camOptions_.rightHand; break;
+                case CamHand: camOptions_.source = CameraOptions::Source((camOptions_.source + 1) % 3); break;  // tablet, left, right
                 case CamFlip: camOptions_.selfie = !camOptions_.selfie; break;
                 case CamCloser: camOptions_.reach = std::max(CAMERA_REACH_MIN, camOptions_.reach - .25f); cameraNote(reachText()); break;
                 case CamFurther: camOptions_.reach = std::min(CAMERA_REACH_MAX, camOptions_.reach + .25f); cameraNote(reachText()); break;
@@ -398,7 +398,7 @@ private:
     std::wstring cameraLabel(int i) const {
         switch (i) {
             case CamBack: return L"\x25C0 BACK";
-            case CamHand: return camOptions_.rightHand ? L"RIGHT HAND" : L"LEFT HAND";
+            case CamHand: return camOptions_.source == CameraOptions::Tablet ? L"TABLET" : camOptions_.source == CameraOptions::RightHand ? L"RIGHT HAND" : L"LEFT HAND";
             case CamFlip: return camOptions_.selfie ? L"SELFIE" : L"FRONT";
             case CamCloser: return L"\x2212";
             case CamFurther: return L"+";
@@ -971,7 +971,7 @@ private:
         }
         canvas_.fill({0, CAM_VIEW.y1, SCREEN_W, SCREEN_H}, rgb(20, 22, 30));
         for (int i = 0; i < CAM_BUTTONS; i++) {
-            std::wstring label = i == CamCloser ? L"CLOSER" : i == CamFurther ? L"FURTHER" : i == CamHand ? (camOptions_.rightHand ? L"RIGHT" : L"LEFT") : cameraLabel(i);
+            std::wstring label = i == CamCloser ? L"CLOSER" : i == CamFurther ? L"FURTHER" : i == CamHand ? (camOptions_.source == CameraOptions::Tablet ? L"TABLET" : camOptions_.source == CameraOptions::RightHand ? L"RIGHT" : L"LEFT") : cameraLabel(i);
             button(camButton(i), label, pressed_ == 700 + i, cameraColor(i), 18);
         }
     }
