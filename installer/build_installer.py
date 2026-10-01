@@ -2,7 +2,7 @@
 
 payload.zip holds what tools/install.py needs, laid out like the repository:
   tools/*.py, vendor/Doom-on-EchoVR/EchoVr-Tablet-Probing/*.py, native/generated/,
-  dist/EchoArcade.dll, dist/EchoArcade/ArcadeHost.exe, loader/dinput8.dll,
+  dist/EchoArcade.dll, dist/EchoArcade/ArcadeHost.exe, loader/dinput8.dll, echocam/EchoCam.dll,
   python/  (the official Windows embeddable Python + zstandard, pillow, texture2ddecoder)
 
 Needs: build.cmd done (dist/), dist/loader/dinput8.dll, and the embeddable Python zip
@@ -41,6 +41,11 @@ def main():
         add(ROOT / 'dist/EchoArcade.dll', 'dist/EchoArcade.dll')
         add(ROOT / 'dist/EchoArcade/ArcadeHost.exe', 'dist/EchoArcade/ArcadeHost.exe')
         add(ROOT / 'dist/loader/dinput8.dll', 'loader/dinput8.dll')
+        # The camera plugin, built in Echo Restoration (ECHOCAM_DLL overrides where it is)
+        echocam = Path(os.environ.get('ECHOCAM_DLL', ROOT.parent / 'echo halloween/echocam/EchoCam.dll'))
+        if not echocam.exists():
+            raise SystemExit(f'{echocam} missing: build EchoCam first (echocam\\build.cmd)')
+        add(echocam, 'echocam/EchoCam.dll')
         # Python: the embeddable distribution, with site-packages enabled
         with zipfile.ZipFile(embed[-1]) as e:
             for info in e.infolist():

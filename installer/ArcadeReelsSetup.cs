@@ -12,6 +12,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -35,6 +36,12 @@ namespace ArcadeReelsSetup
 		const string LoaderMarker = "Echo Arcade plugin loader";
 		const string DiscGlowMarker = "DiscGlow active:";      // DiscGlow also loads echoloader.json plugins
 		const string PackagePrefix = "48037dc70b0ecab2_";
+		// The camera needs the game's second viewport: Echo is started with this (the shortcut and Launch Echo)
+		const string LaunchArguments = "-capturevp2";
+		const string ShortcutName = "Echo VR (Camera).lnk";
+		const string EchoCamDefaults =
+			"[EchoCam]\r\nMode=head\r\nHand=left\r\nOnPanel=1\r\nHandOffset=0 0.1 0.25\r\nHandYaw=0\r\nLog=1\r\n" +
+			"[Panel]\r\nShow=0\r\nHand=left\r\nScale=1.3\r\nNudge=0.0175 0.0125\r\nFinger=0 -0.02 -0.08\r\nPress=0.012\r\nRelease=0.03\r\nHover=0.12\r\n";
 
 		static readonly string AppDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EchoArcadeReels");
 		static string StatePath { get { return Path.Combine(AppDir, "app", "install_state.json"); } }
@@ -76,7 +83,7 @@ namespace ArcadeReelsSetup
 			Font = Theme.Body;
 
 			var title = new Label { Text = "Echo Arcade Reels", Font = Theme.Title, ForeColor = Theme.Text, AutoSize = true, Left = 22, Top = 16 };
-			var sub = new Label { Text = "Instagram Reels on the Echo VR hand tablet (PC)", ForeColor = Theme.Muted, AutoSize = true, Left = 25, Top = 52 };
+			var sub = new Label { Text = "Instagram Reels, TikTok and a camera on the Echo VR hand tablet (PC)", ForeColor = Theme.Muted, AutoSize = true, Left = 25, Top = 52 };
 
 			var card = new Card { Title = "Install", Left = 20, Top = 84, Width = 680, Height = 186 };
 			lblFolder.SetBounds(18, 50, 540, 20);
@@ -100,8 +107,9 @@ namespace ArcadeReelsSetup
 
 			Activated += delegate { if (!_busy) RefreshStatus(); };
 			SetGame(folderArgument ?? LoadSetting() ?? DetectGame());
-			Write("After installing: start Echo VR, open the hand tablet and press the gamepad tab (far left), then REELS.");
-			Write("The first time, log into Instagram in the Chrome window that opens on your desktop.");
+			Write("After installing: start Echo VR with Launch Echo or the \"Echo VR (Camera)\" desktop shortcut, open the hand tablet,");
+			Write("press the gamepad tab (far left), then REELS, TIKTOK or CAMERA.");
+			Write("The first time, log into Instagram / TikTok in the Chrome window that opens on your desktop.");
 		}
 
 		// ---- Finding Echo ----
@@ -395,7 +403,8 @@ namespace ArcadeReelsSetup
 			}
 			ConfigureReelsOnly();
 			InstallLoader();
-			Write("Done. Start Echo VR, open the hand tablet and press the gamepad tab, then REELS.");
+			InstallCamera();
+			Write("Done. Click Launch Echo (or use the \"Echo VR (Camera)\" desktop shortcut), open the hand tablet and press the gamepad tab.");
 		}
 
 		// Offers to uninstall tablet mods that would stop the install; false when one stays installed
@@ -450,7 +459,7 @@ namespace ArcadeReelsSetup
 				int at = lines.FindIndex(host + 1, l => l.TrimStart().StartsWith(key + "=", StringComparison.OrdinalIgnoreCase));
 				if (at >= 0) lines[at] = key + "=" + value; else lines.Insert(host + 1, key + "=" + value);
 			};
-			set("tiles", "reels");
+			set("tiles", "reels,tiktok,camera");
 			set("audio_device", "default");
 			File.WriteAllLines(ini, lines);
 			Write("Configured: only the REELS tile, sound on the Windows default output.");
@@ -481,6 +490,76 @@ namespace ArcadeReelsSetup
 			Write("Installed the plugin loader (dinput8.dll).");
 		}
 
+		// ---- Camera (EchoCam.dll: the hand/tablet camera and the side panel) ----
+
+		string EchoLoaderJson { get { return Path.Combine(Bin, "echoloader.json"); } }
+		static string ShortcutPath { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), ShortcutName); } }
+
+		// Adds or removes {"file": name, "args": {}} in echoloader.json's plugin list
+		void SetLoaderEntry(string name, bool present)
+		{
+			var json = new JavaScriptSerializer();
+			var root = File.Exists(EchoLoaderJson) ? json.DeserializeObject(File.ReadAllText(EchoLoaderJson)) as Dictionary<string, object> : null;
+			if (root == null) root = new Dictionary<string, object>();
+			var plugins = new List<object>();
+			object list;
+			if (root.TryGetValue("plugins", out list) && list is object[]) plugins.AddRange((object[])list);
+			plugins.RemoveAll(p => p is Dictionary<string, object> && string.Equals(((Dictionary<string, object>)p).ContainsKey("file") ? ((Dictionary<string, object>)p)["file"] as string : null, name, StringComparison.OrdinalIgnoreCase));
+			if (present) plugins.Add(new Dictionary<string, object> { { "file", name }, { "args", new Dictionary<string, object>() } });
+			root["plugins"] = plugins;
+			File.WriteAllText(EchoLoaderJson, json.Serialize(root) + "\n");
+		}
+
+		void InstallCamera()
+		{
+			string source = Path.Combine(AppDir, "app", "echocam", "EchoCam.dll");
+			if (!File.Exists(source)) { Write("WARNING: EchoCam.dll is missing from this installer; the camera is not installed."); return; }
+			string plugins = Path.Combine(Bin, "plugins");
+			Directory.CreateDirectory(plugins);
+			string dll = Path.Combine(plugins, "EchoCam.dll"), ini = Path.Combine(plugins, "EchoCam.ini");
+			try { File.Copy(source, dll, true); }
+			catch (IOException)
+			{
+				// In use (Echo still running): a loaded DLL can be renamed, then replaced
+				File.Move(dll, dll + ".old-" + DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+				File.Copy(source, dll, true);
+			}
+			if (!File.Exists(ini)) File.WriteAllText(ini, EchoCamDefaults);  // keeps your own settings on a repair
+			SetLoaderEntry("EchoCam.dll", true);
+			CreateShortcut();
+			Write("Installed the camera (EchoCam.dll) and the \"Echo VR (Camera)\" desktop shortcut (" + LaunchArguments + ").");
+		}
+
+		void CreateShortcut()
+		{
+			try
+			{
+				Type type = Type.GetTypeFromProgID("WScript.Shell");
+				object shell = Activator.CreateInstance(type);
+				object link = type.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { ShortcutPath });
+				Type linkType = link.GetType();
+				string exe = Path.Combine(Bin, "echovr.exe");
+				Action<string, object> set = (name, value) => linkType.InvokeMember(name, BindingFlags.SetProperty, null, link, new[] { value });
+				set("TargetPath", exe);
+				set("Arguments", LaunchArguments);
+				set("WorkingDirectory", Bin);
+				set("IconLocation", exe + ",0");
+				set("Description", "Echo VR with the hand camera (" + LaunchArguments + ")");
+				linkType.InvokeMember("Save", BindingFlags.InvokeMethod, null, link, null);
+			}
+			catch (Exception ex) { Write("Could not create the desktop shortcut: " + ex.Message); }
+		}
+
+		void UninstallCamera()
+		{
+			string plugins = Path.Combine(Bin, "plugins");
+			foreach (string file in new[] { "EchoCam.dll", "EchoCam.ini", "EchoCam.log" })
+				try { if (File.Exists(Path.Combine(plugins, file))) File.Delete(Path.Combine(plugins, file)); } catch { }
+			try { if (File.Exists(EchoLoaderJson)) SetLoaderEntry("EchoCam.dll", false); } catch { }
+			try { if (File.Exists(ShortcutPath)) File.Delete(ShortcutPath); } catch { }
+			Write("Removed the camera and its desktop shortcut.");
+		}
+
 		void Uninstall()
 		{
 			Unpack();
@@ -501,13 +580,19 @@ namespace ArcadeReelsSetup
 				File.Delete(chain); // Our loader, chained by DiscGlow (installed after us)
 				Write("Removed the plugin loader.");
 			}
+			UninstallCamera();
 			Write(code == 0 ? "Uninstalled." : "Uninstall incomplete (see above).");
 		}
 
 		void Launch()
 		{
 			if (GameRunning()) { Msg("Echo VR is already running."); return; }
-			try { Process.Start(new ProcessStartInfo(Path.Combine(Bin, "echovr.exe")) { WorkingDirectory = Bin, UseShellExecute = true }); }
+			// The camera shortcut (it carries the launch arguments), else the game with them
+			try
+			{
+				if (File.Exists(ShortcutPath)) Process.Start(new ProcessStartInfo(ShortcutPath) { UseShellExecute = true });
+				else Process.Start(new ProcessStartInfo(Path.Combine(Bin, "echovr.exe"), LaunchArguments) { WorkingDirectory = Bin, UseShellExecute = true });
+			}
 			catch (Exception ex) { Msg("Could not start Echo VR: " + ex.Message); }
 		}
 
