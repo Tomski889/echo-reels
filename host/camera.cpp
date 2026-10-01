@@ -53,6 +53,7 @@ CameraOptions loadCameraOptions(const Config& config) {
     float amount = float(_wtof(smooth));
     for (int i = 0; i < int(std::size(CAMERA_SMOOTHING)); i++)
         if (std::fabs(CAMERA_SMOOTHING[i] - amount) < std::fabs(CAMERA_SMOOTHING[o.smoothing] - amount)) o.smoothing = i;
+    o.fisheye = std::clamp(int(GetPrivateProfileIntW(L"EchoCam", L"Fisheye", 0, ini.c_str())), 0, int(std::size(CAMERA_FISHEYE)) - 1);
     o.resolution = std::clamp(int(GetPrivateProfileIntW(L"EchoCam", L"CameraResolution", 0, ini.c_str())), 0, int(std::size(CAMERA_RESOLUTIONS)) - 1);
     return o;
 }
@@ -72,6 +73,10 @@ void saveCameraOptions(const Config& config, const CameraOptions& options) {
     WritePrivateProfileStringW(L"EchoCam", L"Smoothing", number, ini.c_str());
     swprintf_s(number, L"%d", options.resolution);
     WritePrivateProfileStringW(L"EchoCam", L"CameraResolution", number, ini.c_str());
+    swprintf_s(number, L"%d", options.fisheye);
+    WritePrivateProfileStringW(L"EchoCam", L"Fisheye", number, ini.c_str());
+    swprintf_s(number, L"%.0f", CAMERA_FISHEYE[options.fisheye].fov);  // EchoCam widens the camera (0 = the game's view)
+    WritePrivateProfileStringW(L"EchoCam", L"Fov", number, ini.c_str());
     hostLog("camera: %s, %s, reach %.2f m%s", options.source == CameraOptions::Tablet ? "tablet" : options.source == CameraOptions::RightHand ? "right hand" : "left hand",
             options.selfie ? "selfie" : "front",
             options.reach, options.frozen ? ", frozen" : "");
@@ -82,6 +87,43 @@ void setHandCamera(const Config& config, bool on) {
     WritePrivateProfileStringW(L"EchoCam", L"Mode", on ? L"hand" : L"head", echoCamIni(config).c_str());
     if (!on) WritePrivateProfileStringW(L"EchoCam", L"Freeze", L"0", echoCamIni(config).c_str());
     hostLog("camera: %s view", on ? "hand" : "head");
+}
+
+static float fisheyeSource(float r, float strength) {
+    return r <= 0 ? 0 : std::tan(r * strength) / std::tan(strength) / r;  // source radius / output radius
+}
+
+void fisheye(const uint8_t* src, int w, int h, int pitch, std::vector<uint8_t>& out, float strength) {
+    out.resize(size_t(w) * h * 4);
+    float cx = (w - 1) / 2.f, cy = (h - 1) / 2.f, half = std::sqrt(cx * cx + cy * cy);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            float dx = x - cx, dy = y - cy, k = strength > 0 ? fisheyeSource(std::sqrt(dx * dx + dy * dy) / half, strength) : 1.f;
+            float sx = std::clamp(cx + dx * k, 0.f, float(w - 1)), sy = std::clamp(cy + dy * k, 0.f, float(h - 1));
+            int x0 = int(sx), y0 = int(sy), x1 = std::min(x0 + 1, w - 1), y1 = std::min(y0 + 1, h - 1);
+            float fx = sx - x0, fy = sy - y0;
+            const uint8_t *a = src + size_t(y0) * pitch + x0 * 4, *b = src + size_t(y0) * pitch + x1 * 4;
+            const uint8_t *c = src + size_t(y1) * pitch + x0 * 4, *d = src + size_t(y1) * pitch + x1 * 4;
+            uint8_t* o = &out[(size_t(y) * w + x) * 4];
+            for (int ch = 0; ch < 4; ch++)
+                o[ch] = uint8_t((a[ch] * (1 - fx) + b[ch] * fx) * (1 - fy) + (c[ch] * (1 - fx) + d[ch] * fx) * fy + .5f);
+        }
+}
+
+void FisheyeMap::apply(const uint32_t* src, int w, int h, int pitch, uint32_t* out, int outPitch, float strength) {
+    if (w != w_ || h != h_ || strength != strength_) {
+        w_ = w; h_ = h; strength_ = strength;
+        from_.resize(size_t(w) * h);
+        float cx = (w - 1) / 2.f, cy = (h - 1) / 2.f, half = std::sqrt(cx * cx + cy * cy);
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                float dx = x - cx, dy = y - cy, k = fisheyeSource(std::sqrt(dx * dx + dy * dy) / half, strength);
+                int sx = std::clamp(int(cx + dx * k + .5f), 0, w - 1), sy = std::clamp(int(cy + dy * k + .5f), 0, h - 1);
+                from_[size_t(y) * w + x] = sy * (pitch / 4) + sx;
+            }
+    }
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) out[size_t(y) * (outPitch / 4) + x] = src[from_[size_t(y) * w + x]];
 }
 
 void applyCameraResolution(HWND window, int index) {

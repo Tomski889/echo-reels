@@ -40,9 +40,9 @@ const Rect SEEK_BAR{20, 448, 1004, 476};
 enum CamButton { CamBack, CamHand, CamFlip, CamCloser, CamFurther, CamFreeze, CamTimer, CamShot };
 constexpr int CAM_TIMERS[] = {0, 3, 5, 10};  // self-timer choices, seconds
 // The tablet's CAMERA screen is its settings (the picture is on the side panel): one row per setting
-enum CamSetting { SetSource, SetView, SetReach, SetSmooth, SetResolution, SetTimer, CAM_SETTINGS };
-constexpr const wchar_t* CAM_SETTING_NAMES[CAM_SETTINGS] = {L"SOURCE", L"VIEW", L"REACH", L"SMOOTHING", L"RESOLUTION", L"TIMER"};
-constexpr int CAM_ROW_Y = 70, CAM_ROW_H = 66, CAM_LABEL_W = 230;
+enum CamSetting { SetSource, SetView, SetReach, SetSmooth, SetFisheye, SetResolution, SetTimer, CAM_SETTINGS };
+constexpr const wchar_t* CAM_SETTING_NAMES[CAM_SETTINGS] = {L"SOURCE", L"VIEW", L"REACH", L"SMOOTHING", L"FISHEYE", L"RESOLUTION", L"TIMER"};
+constexpr int CAM_ROW_Y = 66, CAM_ROW_H = 57, CAM_LABEL_W = 230;
 const Rect CAM_BACK{12, 474, 232, 562}, CAM_FREEZE{402, 474, 622, 562}, CAM_PHOTO{792, 474, 1012, 562};
 constexpr int PLAYER_BUTTONS = 10;
 const wchar_t* const PLAYER_LABELS[PLAYER_BUTTONS] = {L"-30s", L"-10s", L"PLAY", L"+10s", L"+30s", L"VOL -", L"VOL +", L"SUBS", L"AUDIO", L"CLOSE"};
@@ -369,7 +369,13 @@ private:
         camFlashAt_ = GetTickCount64();
         auto pixels = std::make_shared<std::vector<uint8_t>>(camPixels_);
         int w = camW_, h = camH_;
-        spawn([this, pixels, w, h] {
+        float strength = CAMERA_FISHEYE[camOptions_.fisheye].strength;
+        spawn([this, pixels, w, h, strength] {
+            if (strength > 0) {  // the photo bent like the live view
+                std::vector<uint8_t> bent;
+                fisheye(pixels->data(), w, h, w * 4, bent, strength);
+                pixels->swap(bent);
+            }
             std::wstring name = savePhoto(*pixels, w, h);
             std::lock_guard<std::mutex> lock(pendingLock_);
             pending_.push_back([this, name] { cameraNote(name.empty() ? L"Could not save the photo" : L"Saved Pictures\\Echo\\" + name); });
@@ -401,6 +407,7 @@ private:
             case SetReach: { wchar_t v[24]; swprintf_s(v, L"%.2f m", camOptions_.reach); return {L"\x2212", v, L"+"}; }
             case SetSmooth: return {CAMERA_SMOOTHING_NAMES, CAMERA_SMOOTHING_NAMES + std::size(CAMERA_SMOOTHING_NAMES)};
             case SetResolution: { std::vector<std::wstring> v; for (auto& r : CAMERA_RESOLUTIONS) v.push_back(r.name); return v; }
+            case SetFisheye: { std::vector<std::wstring> v; for (auto& f : CAMERA_FISHEYE) v.push_back(f.name); return v; }
             default: return {L"OFF", L"3s", L"5s", L"10s"};
         }
     }
@@ -411,6 +418,7 @@ private:
             case SetReach: return 1;
             case SetSmooth: return camOptions_.smoothing;
             case SetResolution: return camOptions_.resolution;
+            case SetFisheye: return camOptions_.fisheye;
             default: return camTimer_;
         }
     }
@@ -427,6 +435,7 @@ private:
                 camOptions_.reach = std::clamp(camOptions_.reach + (i == 0 ? -.25f : .25f), CAMERA_REACH_MIN, CAMERA_REACH_MAX);
                 break;
             case SetSmooth: camOptions_.smoothing = i; break;
+            case SetFisheye: camOptions_.fisheye = i; break;
             case SetResolution:
                 camOptions_.resolution = i;
                 applyCameraResolution(camWindow_, i);
@@ -1088,6 +1097,12 @@ private:
             if (have > want) { cw = int(camH_ * want); cx = (camW_ - cw) / 2; }
             else { ch = int(camW_ / want); cy = (camH_ - ch) / 2; }
             c.blit(camPixels_.data() + (size_t(cy) * camW_ + cx) * 4, cw, ch, camW_ * 4, PANEL_VIEW);
+            if (float strength = CAMERA_FISHEYE[camOptions_.fisheye].strength; strength > 0) {
+                uint32_t* px = c.pixels() + PANEL_VIEW.y0 * PANEL_W + PANEL_VIEW.x0;
+                panelViewCopy_.resize(size_t(PANEL_VIEW.w()) * PANEL_VIEW.h());
+                for (int y = 0; y < PANEL_VIEW.h(); y++) memcpy(&panelViewCopy_[size_t(y) * PANEL_VIEW.w()], px + y * PANEL_W, PANEL_VIEW.w() * 4);
+                panelFisheye_.apply(panelViewCopy_.data(), PANEL_VIEW.w(), PANEL_VIEW.h(), PANEL_VIEW.w() * 4, px, PANEL_W * 4, strength);
+            }
         } else {
             c.text({PANEL_VIEW.x0, 300, PANEL_VIEW.x1, 360}, L"Start Echo VR", 30, rgb(220, 220, 230));
             c.text({PANEL_VIEW.x0, 360, PANEL_VIEW.x1, 410}, L"with -capturevp2", 26, rgb(160, 170, 190), false);
@@ -1215,7 +1230,9 @@ private:
     Canvas panelCanvas_{panel_ipc::WIDTH, panel_ipc::HEIGHT};
     uint64_t panelSerial_ = 0, lastPanel_ = 0;
     LONG panelRead_ = 0, fitSeen_ = 0;
-    uint64_t panelShutterHeld_ = 0;  // shutter shown pressed briefly after an instant shot
+    uint64_t panelShutterHeld_ = 0;
+    FisheyeMap panelFisheye_;
+    std::vector<uint32_t> panelViewCopy_;  // shutter shown pressed briefly after an instant shot
     int panelPressed_ = -1;
     std::wstring camNote_;
 };
