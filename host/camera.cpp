@@ -5,6 +5,8 @@
 #include <wincodec.h>
 #include <winrt/base.h>
 #include <algorithm>
+#include <cmath>
+#include <iterator>
 
 namespace {
 
@@ -46,6 +48,12 @@ CameraOptions loadCameraOptions(const Config& config) {
     float x, y, z;
     if (swscanf_s(offset, L"%f %f %f", &x, &y, &z) == 3) o.reach = std::clamp(z, CAMERA_REACH_MIN, CAMERA_REACH_MAX);
     o.frozen = false;  // a new camera session starts live
+    wchar_t smooth[32];
+    GetPrivateProfileStringW(L"EchoCam", L"Smoothing", L"0", smooth, 32, ini.c_str());
+    float amount = float(_wtof(smooth));
+    for (int i = 0; i < int(std::size(CAMERA_SMOOTHING)); i++)
+        if (std::fabs(CAMERA_SMOOTHING[i] - amount) < std::fabs(CAMERA_SMOOTHING[o.smoothing] - amount)) o.smoothing = i;
+    o.resolution = std::clamp(int(GetPrivateProfileIntW(L"EchoCam", L"CameraResolution", 0, ini.c_str())), 0, int(std::size(CAMERA_RESOLUTIONS)) - 1);
     return o;
 }
 
@@ -59,6 +67,11 @@ void saveCameraOptions(const Config& config, const CameraOptions& options) {
     swprintf_s(offset, L"0 0.1 %.2f", options.reach);  // controller space: +z is forward (tested)
     WritePrivateProfileStringW(L"EchoCam", L"HandOffset", offset, ini.c_str());
     WritePrivateProfileStringW(L"EchoCam", L"Freeze", options.frozen ? L"1" : L"0", ini.c_str());
+    wchar_t number[32];
+    swprintf_s(number, L"%.2f", CAMERA_SMOOTHING[options.smoothing]);
+    WritePrivateProfileStringW(L"EchoCam", L"Smoothing", number, ini.c_str());
+    swprintf_s(number, L"%d", options.resolution);
+    WritePrivateProfileStringW(L"EchoCam", L"CameraResolution", number, ini.c_str());
     hostLog("camera: %s, %s, reach %.2f m%s", options.source == CameraOptions::Tablet ? "tablet" : options.source == CameraOptions::RightHand ? "right hand" : "left hand",
             options.selfie ? "selfie" : "front",
             options.reach, options.frozen ? ", frozen" : "");
@@ -69,6 +82,25 @@ void setHandCamera(const Config& config, bool on) {
     WritePrivateProfileStringW(L"EchoCam", L"Mode", on ? L"hand" : L"head", echoCamIni(config).c_str());
     if (!on) WritePrivateProfileStringW(L"EchoCam", L"Freeze", L"0", echoCamIni(config).c_str());
     hostLog("camera: %s view", on ? "hand" : "head");
+}
+
+void applyCameraResolution(HWND window, int index) {
+    static HWND sized = nullptr;
+    static RECT original{};
+    if (!window || !IsWindow(window)) return;
+    if (window != sized && index == 0) return;  // never resized: leave it alone
+    if (window != sized) { GetWindowRect(window, &original); sized = window; }
+    int w, h;
+    LONG style = GetWindowLongW(window, GWL_STYLE), ex = GetWindowLongW(window, GWL_EXSTYLE);
+    if (index == 0) { w = original.right - original.left; h = original.bottom - original.top; }
+    else {
+        RECT r{0, 0, CAMERA_RESOLUTIONS[index].w, CAMERA_RESOLUTIONS[index].h};
+        AdjustWindowRectEx(&r, DWORD(style), FALSE, DWORD(ex));
+        w = r.right - r.left; h = r.bottom - r.top;
+    }
+    // Asynchronous: the game's window thread handles the resize (and its swap chain) in its own time
+    SetWindowPos(window, nullptr, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+    hostLog("camera: Echo window resized to %dx%d (%ls)", w, h, CAMERA_RESOLUTIONS[index].name);
 }
 
 HWND findEchoWindow() {

@@ -37,11 +37,13 @@ const Rect PAGE_UP{916, 84, 1012, 298}, PAGE_DOWN{916, 306, 1012, 520};
 constexpr int ROWS_PER_PAGE = 6, ROW_Y = 84, ROW_H = 72;
 const Rect SEEK_BAR{20, 448, 1004, 476};
 // CAMERA: the live view above a row of buttons
-const Rect CAM_VIEW{0, 0, SCREEN_W, 488};
-constexpr int CAM_BUTTONS = 8;
 enum CamButton { CamBack, CamHand, CamFlip, CamCloser, CamFurther, CamFreeze, CamTimer, CamShot };
-Rect camButton(int i) { return {12 + i * 126, 498, 12 + i * 126 + 118, 566}; }
 constexpr int CAM_TIMERS[] = {0, 3, 5, 10};  // self-timer choices, seconds
+// The tablet's CAMERA screen is its settings (the picture is on the side panel): one row per setting
+enum CamSetting { SetSource, SetView, SetReach, SetSmooth, SetResolution, SetTimer, CAM_SETTINGS };
+constexpr const wchar_t* CAM_SETTING_NAMES[CAM_SETTINGS] = {L"SOURCE", L"VIEW", L"REACH", L"SMOOTHING", L"RESOLUTION", L"TIMER"};
+constexpr int CAM_ROW_Y = 70, CAM_ROW_H = 66, CAM_LABEL_W = 230;
+const Rect CAM_BACK{12, 474, 232, 562}, CAM_FREEZE{402, 474, 622, 562}, CAM_PHOTO{792, 474, 1012, 562};
 constexpr int PLAYER_BUTTONS = 10;
 const wchar_t* const PLAYER_LABELS[PLAYER_BUTTONS] = {L"-30s", L"-10s", L"PLAY", L"+10s", L"+30s", L"VOL -", L"VOL +", L"SUBS", L"AUDIO", L"CLOSE"};
 
@@ -331,6 +333,7 @@ private:
     }
     void closeCamera() {
         if (panel_) panel_->visible = 0;
+        applyCameraResolution(camWindow_, 0);  // the window's own size again outside the camera
         setHandCamera(config_, false);
         camShotAt_ = 0;
         camCapture_.stop();
@@ -350,7 +353,7 @@ private:
         camCapture_.stop();
         camWindow_ = findEchoWindow();
         if (camWindow_ && !camCapture_.start(camWindow_)) camWindow_ = nullptr;
-        if (camWindow_) hostLog("camera: capturing the Echo window %p", camWindow_);
+        if (camWindow_) { hostLog("camera: capturing the Echo window %p", camWindow_); applyCameraResolution(camWindow_, camOptions_.resolution); }
     }
     std::wstring reachText() const {
         wchar_t text[48];
@@ -390,9 +393,58 @@ private:
         }
         saveCameraOptions(config_, camOptions_);
     }
+    // Choices of a settings row: their labels; the chosen one is highlighted (REACH is - value +)
+    std::vector<std::wstring> settingChoices(int row) const {
+        switch (row) {
+            case SetSource: return {L"TABLET", L"LEFT HAND", L"RIGHT HAND"};
+            case SetView: return {L"FRONT", L"SELFIE"};
+            case SetReach: { wchar_t v[24]; swprintf_s(v, L"%.2f m", camOptions_.reach); return {L"\x2212", v, L"+"}; }
+            case SetSmooth: return {CAMERA_SMOOTHING_NAMES, CAMERA_SMOOTHING_NAMES + std::size(CAMERA_SMOOTHING_NAMES)};
+            case SetResolution: { std::vector<std::wstring> v; for (auto& r : CAMERA_RESOLUTIONS) v.push_back(r.name); return v; }
+            default: return {L"OFF", L"3s", L"5s", L"10s"};
+        }
+    }
+    int settingChosen(int row) const {
+        switch (row) {
+            case SetSource: return int(camOptions_.source);
+            case SetView: return camOptions_.selfie ? 1 : 0;
+            case SetReach: return 1;
+            case SetSmooth: return camOptions_.smoothing;
+            case SetResolution: return camOptions_.resolution;
+            default: return camTimer_;
+        }
+    }
+    Rect settingChoice(int row, int i, int count) const {
+        int y = CAM_ROW_Y + row * CAM_ROW_H, x0 = CAM_LABEL_W, w = (SCREEN_W - 12 - x0) / count;
+        return {x0 + i * w + 4, y + 4, x0 + (i + 1) * w - 4, y + CAM_ROW_H - 6};
+    }
+    void chooseSetting(int row, int i) {
+        switch (row) {
+            case SetSource: camOptions_.source = CameraOptions::Source(i); break;
+            case SetView: camOptions_.selfie = i == 1; break;
+            case SetReach:
+                if (i == 1) return;
+                camOptions_.reach = std::clamp(camOptions_.reach + (i == 0 ? -.25f : .25f), CAMERA_REACH_MIN, CAMERA_REACH_MAX);
+                break;
+            case SetSmooth: camOptions_.smoothing = i; break;
+            case SetResolution:
+                camOptions_.resolution = i;
+                applyCameraResolution(camWindow_, i);
+                cameraNote(L"Camera resolution: " + std::wstring(CAMERA_RESOLUTIONS[i].name));
+                break;
+            default: camTimer_ = i; return;
+        }
+        saveCameraOptions(config_, camOptions_);
+    }
     void cameraTouch(const Touch& t) {
-        for (int i = 0; i < CAM_BUTTONS; i++)
-            if (tapped(t, 700 + i, camButton(i))) { cameraButton(i); return; }
+        for (int row = 0; row < CAM_SETTINGS; row++) {
+            auto choices = settingChoices(row);
+            for (int i = 0; i < int(choices.size()); i++)
+                if (tapped(t, 800 + row * 10 + i, settingChoice(row, i, int(choices.size())))) { chooseSetting(row, i); return; }
+        }
+        if (tapped(t, 700 + CamBack, CAM_BACK)) { cameraButton(CamBack); return; }
+        if (tapped(t, 700 + CamFreeze, CAM_FREEZE)) { cameraButton(CamFreeze); return; }
+        if (tapped(t, 700 + CamShot, CAM_PHOTO)) { cameraButton(CamShot); return; }
         if (!t.down) pressed_ = -1;
     }
     std::wstring cameraLabel(int i) const {
@@ -950,33 +1002,30 @@ private:
     }
 
     void drawCamera() {
-        canvas_.clear(rgb(10, 10, 14));
-        if (camWindow_ && camW_ > 0) canvas_.blit(camPixels_.data(), camW_, camH_, camW_ * 4, CAM_VIEW);
-        else {
-            canvas_.text({0, 150, SCREEN_W, 220}, L"Looking for the Echo window...", 32, rgb(220, 220, 230));
-            canvas_.text({0, 230, SCREEN_W, 280}, L"Start Echo VR with -capturevp2 to see the hand camera here.", 22, rgb(160, 170, 190), false);
-        }
+        canvas_.clear(rgb(14, 16, 24));
+        canvas_.fill({0, 0, SCREEN_W, 60}, rgb(22, 26, 40));
+        canvas_.text({24, 0, 600, 60}, L"CAMERA SETTINGS", 30, rgb(90, 200, 255), true, 0);
         uint64_t now = GetTickCount64();
-        if (camFlashAt_ && now - camFlashAt_ < 250)  // shutter flash
-            canvas_.blend(CAM_VIEW, rgb(255, 255, 255), int(200 * (250 - (now - camFlashAt_)) / 250));
-        if (camShotAt_ && camShotAt_ > now) {  // self-timer countdown
-            wchar_t count[8];
-            swprintf_s(count, L"%llu", (camShotAt_ - now + 999) / 1000);
-            canvas_.blend({412, 150, 612, 340}, rgb(0, 0, 0), 150);
-            canvas_.text({412, 150, 612, 340}, count, 140, rgb(255, 255, 255));
+        std::wstring status = !camWindow_ ? L"looking for the Echo window..." : camShotAt_ && camShotAt_ > now ?
+            L"photo in " + std::to_wstring((camShotAt_ - now + 999) / 1000) + L" s" : camOptions_.frozen ? L"frozen in place" : L"live on the side panel";
+        canvas_.text({560, 0, SCREEN_W - 20, 60}, status, 20, rgb(150, 160, 180), false, 2);
+        for (int row = 0; row < CAM_SETTINGS; row++) {
+            int y = CAM_ROW_Y + row * CAM_ROW_H;
+            canvas_.text({24, y, CAM_LABEL_W, y + CAM_ROW_H - 2}, CAM_SETTING_NAMES[row], 22, rgb(220, 224, 235), true, 0);
+            auto choices = settingChoices(row);
+            int chosen = settingChosen(row);
+            for (int i = 0; i < int(choices.size()); i++) {
+                bool on = row == SetReach ? i == 1 : i == chosen;
+                uint32_t color = row == SetReach && i == 1 ? rgb(24, 28, 40) : on ? rgb(40, 110, 150) : rgb(44, 50, 72);
+                button(settingChoice(row, i, int(choices.size())), choices[i], pressed_ == 800 + row * 10 + i, color, row == SetReach && i != 1 ? 32 : 20);
+            }
         }
-        if (camOptions_.frozen) {
-            canvas_.blend({SCREEN_W - 150, 50, SCREEN_W - 12, 90}, rgb(0, 0, 0), 150);
-            canvas_.text({SCREEN_W - 150, 50, SCREEN_W - 12, 90}, L"FROZEN", 20, rgb(120, 200, 255));
-        }
+        button(CAM_BACK, L"\x25C0  BACK", pressed_ == 700 + CamBack, rgb(50, 58, 84), 24);
+        button(CAM_FREEZE, camOptions_.frozen ? L"UNFREEZE" : L"FREEZE", pressed_ == 700 + CamFreeze, camOptions_.frozen ? rgb(40, 90, 130) : rgb(44, 50, 72), 24);
+        button(CAM_PHOTO, camShotAt_ ? L"CANCEL" : L"\x25CF  PHOTO", pressed_ == 700 + CamShot, rgb(200, 150, 30), 24);
         if (now < camNoteUntil_) {
-            canvas_.blend({0, 0, SCREEN_W, 44}, rgb(0, 0, 0), 170);
-            canvas_.text({16, 0, SCREEN_W - 16, 44}, camNote_, 20, rgb(255, 255, 255), true, 0);
-        }
-        canvas_.fill({0, CAM_VIEW.y1, SCREEN_W, SCREEN_H}, rgb(20, 22, 30));
-        for (int i = 0; i < CAM_BUTTONS; i++) {
-            std::wstring label = i == CamCloser ? L"CLOSER" : i == CamFurther ? L"FURTHER" : i == CamHand ? (camOptions_.source == CameraOptions::Tablet ? L"TABLET" : camOptions_.source == CameraOptions::RightHand ? L"RIGHT" : L"LEFT") : cameraLabel(i);
-            button(camButton(i), label, pressed_ == 700 + i, cameraColor(i), 18);
+            canvas_.blend({0, 432, SCREEN_W, 470}, rgb(0, 0, 0), 170);
+            canvas_.text({16, 432, SCREEN_W - 16, 470}, camNote_, 20, rgb(255, 255, 255), true, 0);
         }
     }
 
