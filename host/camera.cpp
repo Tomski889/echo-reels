@@ -53,7 +53,6 @@ CameraOptions loadCameraOptions(const Config& config) {
     float amount = float(_wtof(smooth));
     for (int i = 0; i < int(std::size(CAMERA_SMOOTHING)); i++)
         if (std::fabs(CAMERA_SMOOTHING[i] - amount) < std::fabs(CAMERA_SMOOTHING[o.smoothing] - amount)) o.smoothing = i;
-    o.hideTablet = GetPrivateProfileIntW(L"EchoCam", L"HideTablet", 1, ini.c_str()) != 0;
     o.resolution = std::clamp(int(GetPrivateProfileIntW(L"EchoCam", L"CameraResolution", 0, ini.c_str())), 0, int(std::size(CAMERA_RESOLUTIONS)) - 1);
     return o;
 }
@@ -73,7 +72,6 @@ void saveCameraOptions(const Config& config, const CameraOptions& options) {
     WritePrivateProfileStringW(L"EchoCam", L"Smoothing", number, ini.c_str());
     swprintf_s(number, L"%d", options.resolution);
     WritePrivateProfileStringW(L"EchoCam", L"CameraResolution", number, ini.c_str());
-    WritePrivateProfileStringW(L"EchoCam", L"HideTablet", options.hideTablet ? L"1" : L"0", ini.c_str());
     hostLog("camera: %s, %s, reach %.2f m%s", options.source == CameraOptions::Tablet ? "tablet" : options.source == CameraOptions::RightHand ? "right hand" : "left hand",
             options.selfie ? "selfie" : "front",
             options.reach, options.frozen ? ", frozen" : "");
