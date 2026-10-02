@@ -222,9 +222,8 @@ bool Session::launch(AppId id, const std::wstring& target, double startSeconds) 
                L" --window-position=0,0 --window-size=" + std::to_wstring(SCREEN_W) + L"," + std::to_wstring(SCREEN_H) +
                L" --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --disable-renderer-backgrounding"
                L" --disable-backgrounding-occluded-windows --disable-features=CalculateNativeWinOcclusion,AudioServiceOutOfProcess";
-        // ChatGPT's voice mode needs the microphone: this browser (ChatGPT only) takes the default one without asking, since
-        // Chrome's permission prompt would open outside the captured window
-        if (id == AppId::ChatGpt) args += L" --use-fake-ui-for-media-stream";
+        // ChatGPT's voice mode needs the microphone: the CHATGPT tile grants it through DevTools (Browser.grantPermissions),
+        // since Chrome's permission prompt would open outside the captured window
         reels_.setPort(config_.reelsPort);
     } else if (isVideo(id)) {
         exe = config_.mpv;

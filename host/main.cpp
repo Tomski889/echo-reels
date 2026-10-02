@@ -867,6 +867,10 @@ private:
         if (session_.id() != AppId::ChatGpt || mode_ == Mode::Launcher || now - lastMuteApply_ < 1000) return;
         lastMuteApply_ = now;
         auto& page = session_.reels();
+        if (!micGranted_)
+            micGranted_ = page.browserCommand(R"({"id":1,"method":"Browser.grantPermissions","params":{"origin":"https://chatgpt.com","permissions":["audioCapture"]}})");
+        // An earlier build muted the browser's recording in Windows (which remembers it per app): keep it unmuted
+        if (now - lastWindowsUnmute_ > 3000) { setCaptureMuteTree(session_.pid(), false); lastWindowsUnmute_ = now; }
         if (!micScriptReady_)
             micScriptReady_ = page.addStartupScript(MIC_SCRIPT) && page.evaluate(MIC_SCRIPT);
         if (micScriptReady_ && chatMuted_ != micAppliedMuted_ &&
@@ -876,7 +880,7 @@ private:
         }
     }
     void releaseChatMic() {
-        chatMuted_ = micAppliedMuted_ = micScriptReady_ = false;
+        chatMuted_ = micAppliedMuted_ = micScriptReady_ = micGranted_ = false;
     }
     void toggleChatMic() {
         uint64_t now = GetTickCount64();
@@ -1375,7 +1379,8 @@ private:
     bool chatOrb_ = false, chatOrbAuto_ = false;  // showing the orb; switch to it when ChatGPT first talks
     float orbLevel_ = 0;
     bool chatMuted_ = false, micAppliedMuted_ = false, micScriptReady_ = false;  // ChatGPT does not hear the microphone
-    uint64_t lastMicToggle_ = 0;
+    uint64_t lastMicToggle_ = 0, lastWindowsUnmute_ = 0;
+    bool micGranted_ = false;  // chatgpt.com may use the microphone (granted through DevTools)
     uint64_t lastMuteApply_ = 0;
     int lastMuteCount_ = 0;
     FisheyeMap panelFisheye_;

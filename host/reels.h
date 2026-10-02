@@ -18,6 +18,8 @@ public:
     // JavaScript in the page now (Runtime.evaluate), and in every page loaded from now on (before its own scripts)
     bool evaluate(const std::string& js);
     bool addStartupScript(const std::string& js);
+    // A command for the whole browser (its own DevTools socket, e.g. Browser.grantPermissions); true once sent
+    bool browserCommand(const std::string& json);
     void disconnect();
     // 1 while the page is Instagram's login (or a login check), 0 when not, -1 unknown. Asks /json/list, no WebSocket.
     static int loginShown(int port);

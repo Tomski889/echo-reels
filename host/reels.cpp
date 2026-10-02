@@ -199,3 +199,36 @@ bool CdpInput::addStartupScript(const std::string& js) {
     return sendJson("{\"id\":" + std::to_string(nextId_++) + ",\"method\":\"Page.addScriptToEvaluateOnNewDocument\",\"params\":{\"source\":" +
                     jsonString(js) + "}}");
 }
+
+bool CdpInput::browserCommand(const std::string& json) {
+    HINTERNET session = WinHttpOpen(L"EchoArcade", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) return false;
+    // /json/version: "webSocketDebuggerUrl": "ws://127.0.0.1:<port>/devtools/browser/<id>"
+    std::string version = httpGet(session, port_, L"/json/version");
+    size_t at = version.find("/devtools/browser/"), end = at == std::string::npos ? at : version.find('"', at);
+    bool sent = false;
+    if (end != std::string::npos) {
+        std::string p = version.substr(at, end - at);
+        std::wstring path(p.begin(), p.end());
+        HINTERNET connection = WinHttpConnect(session, L"127.0.0.1", INTERNET_PORT(port_), 0);
+        HINTERNET request = connection ? WinHttpOpenRequest(connection, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0) : nullptr;
+        HINTERNET socket = nullptr;
+        if (request && WinHttpSetOption(request, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0) &&
+            WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(request, nullptr))
+            socket = WinHttpWebSocketCompleteUpgrade(request, 0);
+        if (request) WinHttpCloseHandle(request);
+        if (socket) {
+            sent = WinHttpWebSocketSend(socket, WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE, const_cast<char*>(json.data()), DWORD(json.size())) == NO_ERROR;
+            char reply[4096];
+            DWORD read = 0;
+            WINHTTP_WEB_SOCKET_BUFFER_TYPE type;
+            if (sent) WinHttpWebSocketReceive(socket, reply, sizeof(reply), &read, &type);  // wait for the answer before closing
+            WinHttpWebSocketClose(socket, WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, nullptr, 0);
+            WinHttpCloseHandle(socket);
+            hostLog("reels: browser command %s: %.*s", sent ? "sent" : "failed", int(read < 200 ? read : 200), reply);
+        }
+        if (connection) WinHttpCloseHandle(connection);
+    }
+    WinHttpCloseHandle(session);
+    return sent;
+}
