@@ -44,6 +44,7 @@ struct Config {
     std::wstring reelsUrl;            // page the REELS tile opens
     std::wstring tiktokUrl;           // page the TIKTOK tile opens
     std::wstring chatgptUrl;          // page the CHATGPT tile opens
+    bool spatialAudio = true;         // REELS / TIKTOK sound played from where the tablet is (spatial.h)
     std::wstring reelsAudio;          // "default" (Windows default output) or "headset" (route like the other apps)
     std::wstring tiles;               // launcher tiles to show (comma separated titles); empty = all
     int balatroPort = 55410, retroCmdPort = 55355, retroPadPort = 55400, reelsPort = 9335;

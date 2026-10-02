@@ -5,6 +5,7 @@
 #include "camera.h"
 #include "panel_ipc.h"
 #include "voice.h"
+#include "spatial.h"
 #include <winrt/base.h>
 #include <algorithm>
 #include <functional>
@@ -165,6 +166,7 @@ public:
         session_.kill();
         if (mode_ == Mode::Camera) setHandCamera(config_, false);
         releaseChatMic();
+        spatial_.stop();  // gives the browser its volume back
         if (panel_) { panel_->visible = 0; UnmapViewOfFile(panel_); }
         if (panelMap_) CloseHandle(panelMap_);
     }
@@ -221,6 +223,7 @@ private:
     }
     void appClosed() {
         voiceMeter_.watch(0);
+        spatial_.stop();
         releaseChatMic();
         finishPlex();
         lightGun_.appClosed();
@@ -240,6 +243,7 @@ private:
         if (app.id == AppId::Camera) { openCamera(); return; }
         if (!session_.launch(app.id)) { message_ = L"Could not start " + app.title + L" (see host.log)."; return; }
         unmuteReady_ = false;
+        if ((app.id == AppId::Reels || app.id == AppId::TikTok) && config_.spatialAudio) spatial_.start(session_.pid());
         if (app.id == AppId::ChatGpt) {  // the orb follows ChatGPT's voice: the browser's sound, measured
             voiceMeter_.watch(session_.pid());
             releaseChatMic();
@@ -1397,6 +1401,7 @@ private:
     uint64_t panelShutterHeld_ = 0;
     // CHATGPT orb
     ProcessAudioMeter voiceMeter_;
+    SpatialAudio spatial_;  // REELS / TIKTOK sound from the tablet
     bool chatOrb_ = false, chatOrbAuto_ = false;  // showing the orb; switch to it when ChatGPT first talks
     float orbLevel_ = 0;
     bool chatMuted_ = false, micAppliedMuted_ = false, micScriptReady_ = false;  // ChatGPT does not hear the microphone
