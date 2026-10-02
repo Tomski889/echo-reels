@@ -107,6 +107,21 @@ int setCaptureMuteTree(DWORD rootPid, bool mute) {
     return changed;
 }
 
+int boostProcessTree(DWORD rootPid) {
+    int changed = 0;
+    if (!rootPid) return 0;
+    for (DWORD pid : processTree(rootPid)) {
+        HANDLE process = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!process) continue;
+        PROCESS_POWER_THROTTLING_STATE throttling{PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, 0};
+        bool ok = SetProcessInformation(process, ProcessPowerThrottling, &throttling, sizeof(throttling)) != 0;
+        if (GetPriorityClass(process) != ABOVE_NORMAL_PRIORITY_CLASS) ok = SetPriorityClass(process, ABOVE_NORMAL_PRIORITY_CLASS) && ok;
+        CloseHandle(process);
+        changed += ok;
+    }
+    return changed;
+}
+
 DWORD findProcess(const wchar_t* exe) {
     DWORD found = 0;
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);

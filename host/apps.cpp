@@ -1,5 +1,6 @@
 #include "apps.h"
 #include "camera.h"
+#include "voice.h"
 #include <ws2tcpip.h>
 #include <objbase.h>
 #include <cstdio>
@@ -221,7 +222,7 @@ bool Session::launch(AppId id, const std::wstring& target, double startSeconds) 
                std::to_wstring(config_.reelsPort) + L" --remote-allow-origins=http://127.0.0.1 --no-first-run --no-default-browser-check"
                L" --window-position=0,0 --window-size=" + std::to_wstring(SCREEN_W) + L"," + std::to_wstring(SCREEN_H) +
                L" --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --disable-renderer-backgrounding"
-               L" --disable-backgrounding-occluded-windows --disable-features=CalculateNativeWinOcclusion,AudioServiceOutOfProcess";
+               L" --disable-backgrounding-occluded-windows --disable-features=CalculateNativeWinOcclusion,AudioServiceOutOfProcess,IntensiveWakeUpThrottling";
         // ChatGPT's voice mode needs the microphone: the CHATGPT tile grants it through DevTools (Browser.grantPermissions),
         // since Chrome's permission prompt would open outside the captured window
         reels_.setPort(config_.reelsPort);
@@ -313,7 +314,17 @@ void Session::poll() {
     Rect r = contentRect();
     int x = config_.windowMode == L"offscreen" ? -8000 : 0;
     if (window_) {
-        if (isFeed(id_)) reelsWindow(x);
+        if (isFeed(id_)) {
+            reelsWindow(x);
+            // Windows slows unfocused apps (efficiency mode, background priority): keep the browser at full speed
+            uint64_t now = GetTickCount64();
+            if (now - lastBoost_ > 3000) {
+                lastBoost_ = now;
+                int n = boostProcessTree(pid_);
+                if (n != lastBoostCount_) hostLog("browser: %d process(es) kept at full speed in the background", n);
+                lastBoostCount_ = n;
+            }
+        }
         // Apps resize themselves (RetroArch does on content load); keep nudging it back.
         // The REELS window keeps its place in front of or behind other windows (see reelsWindow()).
         uint64_t now = GetTickCount64();

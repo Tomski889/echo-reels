@@ -69,6 +69,8 @@ private:
     std::shared_ptr<std::atomic<int>> reelsLogin_;  // CdpInput::loginShown(), checked on a worker thread
     uint64_t lastLoginCheck_ = 0;
     bool loginRaised_ = false;
+    uint64_t lastBoost_ = 0;  // boostProcessTree for the browser
+    int lastBoostCount_ = 0;
     SOCKET udp_ = INVALID_SOCKET;
     WindowCapture capture_;
 };

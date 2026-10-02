@@ -10,6 +10,9 @@
 int setCaptureMute(DWORD pid, bool mute);
 int setCaptureMuteTree(DWORD rootPid, bool mute);  // the same for a process and everything it started (Chrome)
 DWORD findProcess(const wchar_t* exe);  // the first process with that file name, or 0
+// Keeps a process and everything it started running at full speed while it is not the focused window: no Windows power
+// throttling (efficiency mode) and above normal priority. Returns how many processes it changed.
+int boostProcessTree(DWORD rootPid);
 
 class ProcessAudioMeter {
 public:
