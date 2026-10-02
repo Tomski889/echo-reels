@@ -101,7 +101,7 @@ void ProcessAudioMeter::run() {
         float peak = 0;
         for (auto& m : meters) {
             float v = 0;
-            if (SUCCEEDED(m->GetPeakValue(&v))) peak = std::max(peak, v);
+            if (SUCCEEDED(m->GetPeakValue(&v))) peak = (std::max)(peak, v);
         }
         level_ = peak;
     }
