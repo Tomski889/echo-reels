@@ -158,6 +158,8 @@ std::vector<AppInfo> listApps(const Config& c) {
                     rgb(225, 48, 108)});
     apps.push_back({AppId::TikTok, L"TIKTOK", L"TikTok For You", exists(c.edge) ? L"" : L"No Chrome or Edge found - set browser= in arcade.ini",
                     rgb(37, 244, 238)});
+    apps.push_back({AppId::ChatGpt, L"CHATGPT", L"Talk to ChatGPT (voice)", exists(c.edge) ? L"" : L"No Chrome or Edge found - set browser= in arcade.ini",
+                    rgb(16, 163, 127)});
     apps.push_back({AppId::Camera, L"CAMERA", L"Photos from your hand", exists(echoCamDll(c)) ? L"" : L"EchoCam.dll not installed",
                     rgb(250, 190, 40)});
     // arcade.ini [host] tiles= (comma separated titles, e.g. "reels") keeps only those tiles
@@ -214,11 +216,15 @@ bool Session::launch(AppId id, const std::wstring& target, double startSeconds) 
         exe = config_.edge;
         cwd = folderOf(exe);
         std::wstring profile = localAppData() + L"\\EchoArcade\\reels-profile";
-        args = L"--app=\"" + (id == AppId::TikTok ? config_.tiktokUrl : config_.reelsUrl) + L"\" --user-data-dir=\"" + profile + L"\" --remote-debugging-port=" +
+        const std::wstring& url = id == AppId::TikTok ? config_.tiktokUrl : id == AppId::ChatGpt ? config_.chatgptUrl : config_.reelsUrl;
+        args = L"--app=\"" + url + L"\" --user-data-dir=\"" + profile + L"\" --remote-debugging-port=" +
                std::to_wstring(config_.reelsPort) + L" --remote-allow-origins=http://127.0.0.1 --no-first-run --no-default-browser-check"
                L" --window-position=0,0 --window-size=" + std::to_wstring(SCREEN_W) + L"," + std::to_wstring(SCREEN_H) +
                L" --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --disable-renderer-backgrounding"
                L" --disable-backgrounding-occluded-windows --disable-features=CalculateNativeWinOcclusion,AudioServiceOutOfProcess";
+        // ChatGPT's voice mode needs the microphone: this browser (ChatGPT only) takes the default one without asking, since
+        // Chrome's permission prompt would open outside the captured window
+        if (id == AppId::ChatGpt) args += L" --use-fake-ui-for-media-stream";
         reels_.setPort(config_.reelsPort);
     } else if (isVideo(id)) {
         exe = config_.mpv;

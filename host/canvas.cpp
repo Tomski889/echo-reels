@@ -97,6 +97,8 @@ Config loadConfig() {
     c.reelsUrl = url;
     GetPrivateProfileStringW(L"host", L"tiktok_url", L"https://www.tiktok.com/foryou", url, 1024, ini.c_str());
     c.tiktokUrl = url;
+    GetPrivateProfileStringW(L"host", L"chatgpt_url", L"https://chatgpt.com/", url, 1024, ini.c_str());
+    c.chatgptUrl = url;
     c.reelsPort = GetPrivateProfileIntW(L"host", L"reels_port", c.reelsPort, ini.c_str());
     // Chrome's sandboxed audio process ignores per-app output routing, so REELS uses the Windows default
     wchar_t reelsAudio[32];

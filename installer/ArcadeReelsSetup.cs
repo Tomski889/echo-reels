@@ -83,7 +83,7 @@ namespace ArcadeReelsSetup
 			Font = Theme.Body;
 
 			var title = new Label { Text = "Echo Arcade Reels", Font = Theme.Title, ForeColor = Theme.Text, AutoSize = true, Left = 22, Top = 16 };
-			var sub = new Label { Text = "Instagram Reels, TikTok and a camera on the Echo VR hand tablet (PC)", ForeColor = Theme.Muted, AutoSize = true, Left = 25, Top = 52 };
+			var sub = new Label { Text = "Instagram Reels, TikTok, ChatGPT and a camera on the Echo VR hand tablet (PC)", ForeColor = Theme.Muted, AutoSize = true, Left = 25, Top = 52 };
 
 			var card = new Card { Title = "Install", Left = 20, Top = 84, Width = 680, Height = 186 };
 			lblFolder.SetBounds(18, 50, 540, 20);
@@ -108,8 +108,8 @@ namespace ArcadeReelsSetup
 			Activated += delegate { if (!_busy) RefreshStatus(); };
 			SetGame(folderArgument ?? LoadSetting() ?? DetectGame());
 			Write("After installing: start Echo VR with Launch Echo or the \"Echo VR (Camera)\" desktop shortcut, open the hand tablet,");
-			Write("press the gamepad tab (far left), then REELS, TIKTOK or CAMERA.");
-			Write("The first time, log into Instagram / TikTok in the Chrome window that opens on your desktop.");
+			Write("press the gamepad tab (far left), then REELS, TIKTOK, CHATGPT or CAMERA.");
+			Write("The first time, log into Instagram / TikTok / ChatGPT in the Chrome window that opens on your desktop.");
 		}
 
 		// ---- Finding Echo ----
@@ -459,7 +459,7 @@ namespace ArcadeReelsSetup
 				int at = lines.FindIndex(host + 1, l => l.TrimStart().StartsWith(key + "=", StringComparison.OrdinalIgnoreCase));
 				if (at >= 0) lines[at] = key + "=" + value; else lines.Insert(host + 1, key + "=" + value);
 			};
-			set("tiles", "reels,tiktok,camera");
+			set("tiles", "reels,tiktok,chatgpt,camera");
 			set("audio_device", "default");
 			File.WriteAllLines(ini, lines);
 			Write("Configured: only the REELS tile, sound on the Windows default output.");
