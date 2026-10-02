@@ -33,6 +33,14 @@ const Rect ORB_BUTTON{SCREEN_W - 64, 0, SCREEN_W, 64};  // CHATGPT: back to the 
 const Rect MIC_BUTTON{SCREEN_W - 330, 0, SCREEN_W - 80, 64};  // CHATGPT: whether ChatGPT hears your microphone
 const Rect ORB_MIC_BUTTON{SCREEN_W / 2 - 240, SCREEN_H - 104, SCREEN_W / 2 + 240, SCREEN_H - 16};  // big: easy to hit, hard to miss
 const Rect ORB_CHAT_BUTTON{SCREEN_W - 200, 12, SCREEN_W - 16, 76};  // the chat page
+// REELS / TIKTOK: the sites start their videos muted; this unmutes every video as it plays
+const char* const UNMUTE_SCRIPT = R"JS((() => {
+  if (window.__echoUnmute) return;
+  window.__echoUnmute = true;
+  const unmute = () => document.querySelectorAll('video').forEach(v => { if (v.muted) v.muted = false; if (v.volume < 1) v.volume = 1; });
+  document.addEventListener('play', unmute, true);
+  setInterval(unmute, 500);
+})();)JS";
 // Keeps every microphone track the page asks for, so they can be switched off (silence) and on again
 const char* const MIC_SCRIPT = R"JS((() => {
   if (window.__echoMicPatched) return;
@@ -136,6 +144,7 @@ public:
             }
             if (mode_ == Mode::PlexLink) pollPlexLink(now);
             applyChatMic(now);
+            applyUnmute(now);
             if (mode_ == Mode::Camera) pollCamera(now);
             reportPlexProgress(now);
             pollDock();
@@ -230,6 +239,7 @@ private:
         if (app.id == AppId::Plex) { openPlex(); return; }
         if (app.id == AppId::Camera) { openCamera(); return; }
         if (!session_.launch(app.id)) { message_ = L"Could not start " + app.title + L" (see host.log)."; return; }
+        unmuteReady_ = false;
         if (app.id == AppId::ChatGpt) {  // the orb follows ChatGPT's voice: the browser's sound, measured
             voiceMeter_.watch(session_.pid());
             releaseChatMic();
@@ -879,6 +889,17 @@ private:
             hostLog("chatgpt: microphone %s for ChatGPT", chatMuted_ ? "muted" : "on");
         }
     }
+    // REELS / TIKTOK: the unmute script, put in as soon as the browser's DevTools answer (and kept for pages loaded later)
+    void applyUnmute(uint64_t now) {
+        if (mode_ != Mode::Running && mode_ != Mode::Menu) return;
+        AppId id = session_.id();
+        if ((id != AppId::Reels && id != AppId::TikTok) || unmuteReady_ || now - lastUnmuteTry_ < 1000) return;
+        lastUnmuteTry_ = now;
+        auto& page = session_.reels();
+        unmuteReady_ = page.addStartupScript(UNMUTE_SCRIPT) && page.evaluate(UNMUTE_SCRIPT);
+        if (unmuteReady_) hostLog("browser: videos unmuted");
+    }
+
     void releaseChatMic() {
         chatMuted_ = micAppliedMuted_ = micScriptReady_ = micGranted_ = false;
     }
@@ -1379,7 +1400,8 @@ private:
     bool chatOrb_ = false, chatOrbAuto_ = false;  // showing the orb; switch to it when ChatGPT first talks
     float orbLevel_ = 0;
     bool chatMuted_ = false, micAppliedMuted_ = false, micScriptReady_ = false;  // ChatGPT does not hear the microphone
-    uint64_t lastMicToggle_ = 0, lastWindowsUnmute_ = 0;
+    uint64_t lastMicToggle_ = 0, lastWindowsUnmute_ = 0, lastUnmuteTry_ = 0;
+    bool unmuteReady_ = false;  // REELS / TIKTOK: the unmute script is in the page
     bool micGranted_ = false;  // chatgpt.com may use the microphone (granted through DevTools)
     uint64_t lastMuteApply_ = 0;
     int lastMuteCount_ = 0;
