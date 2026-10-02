@@ -657,7 +657,19 @@ private:
     static Rect settingTrack(size_t i) { return {140, settingY(i) + 66, 884, settingY(i) + 96}; }
     bool settingsMode() const { return shared_->pageMode == 1; }
 
+    // 3D SOUND toggle (arcade.ini [host] spatial_audio), below the sliders
+    Rect spatialToggle() const { int y = settingY(settings_.size()); return {744, y + 10, 1004, y + 84}; }
+    void setSpatialAudio(bool on) {
+        config_.spatialAudio = on;
+        WritePrivateProfileStringW(L"host", L"spatial_audio", on ? L"1" : L"0", (config_.dir + L"\\arcade.ini").c_str());
+        bool feed = (session_.id() == AppId::Reels || session_.id() == AppId::TikTok) && session_.alive();
+        if (!on) spatial_.stop();  // also gives the browser its volume back
+        else if (feed) spatial_.start(session_.pid());
+        hostLog("settings: 3D sound %s", on ? "on" : "off");
+    }
+
     void settingsTouch(const Touch& t) {
+        if (tapped(t, 650, spatialToggle())) { setSpatialAudio(!config_.spatialAudio); return; }
         for (size_t i = 0; i < settings_.size(); i++) {
             auto& s = settings_[i];
             if (tapped(t, 600 + int(i) * 2, settingMinus(i))) { setSetting(i, s.value - s.step); return; }
@@ -690,7 +702,11 @@ private:
             canvas_.fill({track.x0, track.y0, fill, track.y1}, rgb(70, 150, 190));
             canvas_.fill({fill - 14, track.y0 - 16, fill + 14, track.y1 + 16}, rgb(235, 240, 250));
         }
-        canvas_.text({24, 516, 1004, 572}, L"Saved instantly; the tablet size changes live. "
+        int y = settingY(settings_.size());
+        canvas_.text({24, y, 720, y + 50}, L"3D SOUND", 26, rgb(235, 235, 240), true, 0);
+        canvas_.text({24, y + 46, 720, y + 90}, L"REELS and TIKTOK sound comes from the tablet", 18, rgb(150, 160, 180), false, 0);
+        button(spatialToggle(), config_.spatialAudio ? L"ON" : L"OFF", pressed_ == 650, config_.spatialAudio ? rgb(40, 110, 60) : rgb(70, 50, 50), 30);
+        canvas_.text({24, 516, 1004, 572}, L"Saved instantly; the tablet size and 3D sound change live. "
                      L"View (FOV) is set in echo_tweaks.ini.", 17, rgb(150, 160, 180), false, 0);
     }
 
