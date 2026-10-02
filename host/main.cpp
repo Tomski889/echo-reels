@@ -4,6 +4,7 @@
 #include "apps.h"
 #include "camera.h"
 #include "panel_ipc.h"
+#include "voice.h"
 #include <winrt/base.h>
 #include <algorithm>
 #include <functional>
@@ -28,6 +29,7 @@ const PadButton PAD[] = {
 const Rect STICK_AREA{1, 201, 199, 399}, STICK_TOGGLE{16, 412, 184, 458};
 const Rect RETRO_HOME{108, 470, 184, 526}, RETRO_MENU{936, 470, 1012, 526};
 const Rect BALATRO_HOME{0, 0, 64, 64};
+const Rect ORB_BUTTON{SCREEN_W - 64, 0, SCREEN_W, 64};  // CHATGPT: back to the orb from the chat page
 const Rect RESUME_BUTTON{312, 190, 712, 270}, QUIT_BUTTON{312, 300, 712, 380};
 const Rect BACK_BUTTON{12, 10, 150, 66};
 const Rect DOCK_BUTTON{744, 12, 1008, 64};                  // launcher header
@@ -184,6 +186,7 @@ private:
         resetInput();
     }
     void appClosed() {
+        voiceMeter_.watch(0);
         finishPlex();
         lightGun_.appClosed();
         gunUsed_ = false;
@@ -201,6 +204,12 @@ private:
         if (app.id == AppId::Plex) { openPlex(); return; }
         if (app.id == AppId::Camera) { openCamera(); return; }
         if (!session_.launch(app.id)) { message_ = L"Could not start " + app.title + L" (see host.log)."; return; }
+        if (app.id == AppId::ChatGpt) {  // the orb follows ChatGPT's voice: the browser's sound, measured
+            voiceMeter_.watch(session_.pid());
+            chatOrb_ = false;
+            chatOrbAuto_ = true;
+            orbLevel_ = 0;
+        }
         gunUsed_ = false;
         mode_ = Mode::Running;
         resetInput();
@@ -664,6 +673,7 @@ private:
             case Mode::Running:
                 if (isVideo(session_.id())) playerTouch(t);
                 else if (isRetro(session_.id())) retroTouch(t);
+                else if (session_.id() == AppId::ChatGpt) chatTouch(t);
                 else if (isFeed(session_.id())) reelsTouch(t);
                 else balatroTouch(t);
                 break;
@@ -822,6 +832,17 @@ private:
         }
     }
 
+    // CHATGPT: in the orb view a tap shows the chat page; on the page the top right button goes back to the orb
+    void chatTouch(const Touch& t) {
+        if (chatOrb_) {
+            if (BALATRO_HOME.contains(t.x, t.y)) { if (!t.down) openMenu(); return; }
+            if (!t.down && held_.empty()) { chatOrb_ = false; chatOrbAuto_ = false; }
+            return;
+        }
+        if (ORB_BUTTON.contains(t.x, t.y) && !reelsActive_) { if (!t.down) chatOrb_ = true; return; }
+        reelsTouch(t);
+    }
+
     // REELS: a quick touch is a click where it landed; sliding up or down (like a phone) scrolls to
     // the next or previous reel. The menu button (top left) works as in Balatro.
     void reelsTouch(const Touch& t) {
@@ -943,7 +964,52 @@ private:
         canvas_.text({0, 450, SCREEN_W, 500}, L"This screen continues by itself once you approve.", 22, rgb(150, 160, 180), false);
     }
 
+    // CHATGPT's orb: a cloudy blue and white ball that swirls slowly and swells with ChatGPT's voice
+    void drawOrb() {
+        float target = std::min(1.f, voiceMeter_.level() * 2.5f);
+        orbLevel_ += (target - orbLevel_) * (target > orbLevel_ ? .45f : .08f);  // quick to swell, slow to settle
+        float t = GetTickCount64() / 1000.f, level = orbLevel_;
+        canvas_.clear(rgb(0, 0, 0));
+        uint32_t* px = canvas_.pixels();
+        const float cx = SCREEN_W / 2.f, cy = SCREEN_H / 2.f - 6;
+        const float r = 150 + 70 * level + 4 * std::sin(t * 1.5f), glow = 14 + 70 * level;
+        int y0 = std::max(0, int(cy - r - glow)), y1 = std::min(SCREEN_H - 1, int(cy + r + glow));
+        int x0 = std::max(0, int(cx - r - glow)), x1 = std::min(SCREEN_W - 1, int(cx + r + glow));
+        for (int y = y0; y <= y1; y++)
+            for (int x = x0; x <= x1; x++) {
+                float dx = x - cx, dy = y - cy, d = std::sqrt(dx * dx + dy * dy);
+                if (d > r + glow) continue;
+                float cr, cg, cb, a;
+                if (d > r) {  // soft blue glow around it, stronger while talking
+                    float g = 1 - (d - r) / glow;
+                    a = g * g * (.25f + .55f * level);
+                    cr = 40; cg = 140; cb = 255;
+                } else {
+                    float u = dx / r, v = dy / r;
+                    float n = std::sin(u * 3.1f + t * .9f + std::sin(v * 2.3f - t * .7f) * 1.4f) +
+                              std::sin(v * 3.7f - t * .6f + std::sin(u * 2.1f + t * .5f) * 1.2f);
+                    float mix = std::clamp(.5f + .22f * n + .35f * v - .2f * u - .25f * level, 0.f, 1.f);  // 0 white .. 1 blue
+                    cr = 235 + (25 - 235) * mix; cg = 246 + (120 - 246) * mix; cb = 255;
+                    float edge = std::clamp(1 - d / r, 0.f, 1.f);  // a little darker towards the rim
+                    float shade = .82f + .18f * std::sqrt(edge) + .12f * level;
+                    cr *= shade; cg *= shade; cb *= std::min(1.f, shade);
+                    a = std::clamp(r + .5f - d, 0.f, 1.f);
+                }
+                uint32_t& p = px[y * SCREEN_W + x];
+                int br = (p >> 16) & 255, bg = (p >> 8) & 255, bb = p & 255;
+                int R = std::min(255, int(br + (cr - br) * a)), G = std::min(255, int(bg + (cg - bg) * a)), B = std::min(255, int(bb + (cb - bb) * a));
+                p = rgb(R, G, B);
+            }
+        canvas_.text({0, SCREEN_H - 50, SCREEN_W, SCREEN_H - 14}, L"tap to show the chat", 18, rgb(110, 120, 140), false);
+        canvas_.blend(BALATRO_HOME, rgb(0, 0, 0), 150);
+        canvas_.text(BALATRO_HOME, L"\x2261", 40, rgb(200, 200, 210));
+    }
+
     void drawApp() {
+        if (session_.id() == AppId::ChatGpt) {
+            if (chatOrbAuto_ && voiceMeter_.level() > .05f) { chatOrb_ = true; chatOrbAuto_ = false; }  // ChatGPT started talking
+            if (chatOrb_ && mode_ == Mode::Running) { drawOrb(); return; }
+        }
         Rect content = session_.contentRect();
         canvas_.clear(rgb(10, 10, 14));
         uint64_t before = captureSerial_;
@@ -965,6 +1031,10 @@ private:
         else {
             canvas_.blend(BALATRO_HOME, rgb(0, 0, 0), 150);
             canvas_.text(BALATRO_HOME, L"\x2261", 40, rgb(255, 255, 255));
+            if (session_.id() == AppId::ChatGpt) {  // back to the orb
+                canvas_.blend(ORB_BUTTON, rgb(0, 0, 0), 150);
+                canvas_.text(ORB_BUTTON, L"\x25C9", 36, rgb(120, 190, 255));
+            }
         }
     }
 
@@ -1231,6 +1301,10 @@ private:
     uint64_t panelSerial_ = 0, lastPanel_ = 0;
     LONG panelRead_ = 0, fitSeen_ = 0;
     uint64_t panelShutterHeld_ = 0;
+    // CHATGPT orb
+    ProcessAudioMeter voiceMeter_;
+    bool chatOrb_ = false, chatOrbAuto_ = false;  // showing the orb; switch to it when ChatGPT first talks
+    float orbLevel_ = 0;
     FisheyeMap panelFisheye_;
     std::vector<uint32_t> panelViewCopy_;  // shutter shown pressed briefly after an instant shot
     int panelPressed_ = -1;

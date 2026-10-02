@@ -35,6 +35,7 @@ public:
     bool hasWindow() const { return window_ != nullptr; }
     HWND window() const { return window_; }
     AppId id() const { return id_; }
+    DWORD pid() const { return pid_; }
     Rect contentRect() const;    // where the app goes on the tablet screen
     WindowCapture& capture() { return capture_; }
     void quit();                 // polite request, then forced after a grace period
