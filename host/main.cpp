@@ -34,11 +34,23 @@ const Rect ORB_BUTTON{SCREEN_W - 64, 0, SCREEN_W, 64};  // CHATGPT: back to the 
 const Rect MIC_BUTTON{SCREEN_W - 330, 0, SCREEN_W - 80, 64};  // CHATGPT: whether ChatGPT hears your microphone
 const Rect ORB_MIC_BUTTON{SCREEN_W / 2 - 240, SCREEN_H - 104, SCREEN_W / 2 + 240, SCREEN_H - 16};  // big: easy to hit, hard to miss
 const Rect ORB_CHAT_BUTTON{SCREEN_W - 200, 12, SCREEN_W - 16, 76};  // the chat page
-// REELS / TIKTOK: the sites start their videos muted; this unmutes every video as it plays
+// REELS / TIKTOK: the sites start their videos muted. Instagram keeps its own sound setting and mutes its videos again, so
+// its own sound button is pressed (once a second at most, while it says muted); elsewhere the videos are unmuted directly.
 const char* const UNMUTE_SCRIPT = R"JS((() => {
   if (window.__echoUnmute) return;
   window.__echoUnmute = true;
-  const unmute = () => document.querySelectorAll('video').forEach(v => { if (v.muted) v.muted = false; if (v.volume < 1) v.volume = 1; });
+  let lastPress = 0;
+  const instagram = location.hostname.includes('instagram.com');
+  const unmute = () => {
+    if (instagram) {
+      if (Date.now() - lastPress < 1000) return;
+      const muted = document.querySelector('svg[aria-label="Audio is muted"], [aria-label="Audio is muted"]');
+      const button = muted && muted.closest('button, [role="button"]');
+      if (button) { lastPress = Date.now(); button.click(); }
+      return;
+    }
+    document.querySelectorAll('video').forEach(v => { if (v.muted) v.muted = false; if (v.volume < 1) v.volume = 1; });
+  };
   document.addEventListener('play', unmute, true);
   setInterval(unmute, 500);
 })();)JS";

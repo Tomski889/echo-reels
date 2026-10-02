@@ -111,12 +111,14 @@ struct Placement {
     float muffle = 1;  // one-pole low-pass amount, 1 = open (in front), lower = duller (behind)
 };
 
-Placement place(const float* p) {
+Placement place(const float* p, bool poster) {
     Placement out;
     float d = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
     if (d < .05f) return out;
     float pan = std::clamp(p[0] / d, -1.f, 1.f), front = -p[2] / d;  // Oculus: -z is forward
-    float distance = std::clamp(1.f / (1.f + std::max(0.f, d - .35f) * 1.2f), .15f, 1.f);
+    // The tablet is in your hand: fade quickly with distance. A poster is metres away: fade gently, never below a third.
+    float distance = poster ? std::clamp(1.f / (1.f + std::max(0.f, d - 1.5f) * .35f), .35f, 1.f)
+                            : std::clamp(1.f / (1.f + std::max(0.f, d - .35f) * 1.2f), .15f, 1.f);
     float farGain = 1 - .55f * std::fabs(pan);  // the ear away from the sound
     out.left = distance * (pan > 0 ? farGain : 1.f);
     out.right = distance * (pan < 0 ? farGain : 1.f);
@@ -196,7 +198,8 @@ void SpatialAudio::run(DWORD root) {
             LONG before = shared->seq;
             float p[3] = {shared->position[0], shared->position[1], shared->position[2]};
             LONGLONG time = shared->time;
-            if (!(before & 1) && before == shared->seq && LONGLONG(tick) - time < 500) { target = place(p); placed = true; }
+            bool poster = shared->kind == spatial_ipc::Poster;
+            if (!(before & 1) && before == shared->seq && LONGLONG(tick) - time < 500) { target = place(p, poster); placed = true; }
         }
         UINT32 packet = 0;
         while (SUCCEEDED(captureClient->GetNextPacketSize(&packet)) && packet) {

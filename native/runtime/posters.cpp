@@ -27,6 +27,7 @@
 #include "../generated/arcade_tab.h"
 #include "../generated/posters.h"
 #include "../vendor/minhook/include/MinHook.h"
+#include "spatial_ipc.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -596,6 +597,34 @@ U fire(void* cs, unsigned handle, void* info, float speed, void* muzzle, void* d
     return r;
 }
 
+// Where the docked arcade's sound may come from: the middle of every poster showing it (EchoCam picks the nearest to the
+// player's head; spatial_ipc.h). Count 0 while not docked.
+void publishSoundSources() {
+    static spatial_ipc::Shared* sound = nullptr;
+    static bool tried = false;
+    if (!sound && !tried) {
+        tried = true;
+        if (HANDLE map = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(spatial_ipc::Shared), spatial_ipc::NAME))
+            sound = static_cast<spatial_ipc::Shared*>(MapViewOfFile(map, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(spatial_ipc::Shared)));
+        if (sound) sound->magic = spatial_ipc::MAGIC;
+    }
+    if (!sound) return;
+    InterlockedIncrement(&sound->sourceSeq);  // odd: being written
+    LONG count = 0;
+    if (dock.active)
+        for (auto& face : dock.faces) {
+            if (count >= spatial_ipc::MAX_SOURCES) break;
+            Vec c = dock.space.apply(face.apply(hasFace(dock.mesh) ? meshes[dock.mesh].center : Vec{}));
+            sound->sources[count][0] = c.x;
+            sound->sources[count][1] = c.y;
+            sound->sources[count][2] = c.z;
+            count++;
+        }
+    sound->sourceCount = count;
+    sound->sourceTime = LONGLONG(GetTickCount64());
+    InterlockedIncrement(&sound->sourceSeq);
+}
+
 void safeAfterButton(void* cs, U now) {
     __try { afterButton(cs, now); } __except (EXCEPTION_EXECUTE_HANDLER) { failPosters("access fault reading fingertips"); }
 }
@@ -659,6 +688,7 @@ void afterButtonUpdate(void* cs) {
     if (!lock.owns_lock()) return;
     safeAfterButton(cs, now);
     if (!fault) safeTick(now);
+    if (!fault) publishSoundSources();
 }
 
 void heartbeat(unsigned long long now) {
