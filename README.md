@@ -1,5 +1,5 @@
 # Echo Reels (a fork of Echo Arcade)
-
+BIG CREDITS TO THE BABS- GUY HES AWESOME AND DID 90% OF THISD
 This fork of [kotorvr/echo-arcade](https://github.com/kotorvr/echo-arcade) adds a **REELS** tile: **Instagram Reels on the Echo VR hand tablet**, and a lightweight installer that installs only that tile.
 
 - **Controls:** tap = click (like, unmute, comments), swipe up / down = next / previous reel, ≡ (top left) = menu.
@@ -166,7 +166,7 @@ dist\EchoArcade\ArcadeHost.exe --standalone
 On the desktop, every tile has been driven end to end through the real host, capture and input paths using `fake_game.py`: launching, touch input, pause menu and clean quit for all four tiles, and DOCK, poster touches and shots through the host. The RetroArch light gun (both modes, desktop and off-screen windows) was driven the same way with *Metal Combat* while another window kept focus. The in-game DOCK (poster texture override, fingertip and bullet hit-testing) is built from the game's code and data but hasn't been tried in a lobby yet. Report `runtime.log` with any issue.
 
 ## Credits
-
+https://github.com/nmdurkee/Doom-on-EchoVR - the main genius dude!!
 - **[heisthecat31/Doom-on-EchoVR](https://github.com/heisthecat31/Doom-on-EchoVR):** the reverse-engineered tablet canvas format, button records, hook addresses and package tools this builds on. `setup_apps.py` fetches it at a pinned commit; it is not redistributed here.
 - **[MinHook](https://github.com/TsudaKageyu/minhook)** (BSD-2), included in `native/vendor/minhook`.
 - **[LÖVE](https://love2d.org), [RetroArch/libretro](https://www.libretro.com), [prboom](https://github.com/libretro/libretro-prboom).**
