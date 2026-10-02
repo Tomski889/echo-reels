@@ -30,8 +30,29 @@ const Rect STICK_AREA{1, 201, 199, 399}, STICK_TOGGLE{16, 412, 184, 458};
 const Rect RETRO_HOME{108, 470, 184, 526}, RETRO_MENU{936, 470, 1012, 526};
 const Rect BALATRO_HOME{0, 0, 64, 64};
 const Rect ORB_BUTTON{SCREEN_W - 64, 0, SCREEN_W, 64};  // CHATGPT: back to the orb from the chat page
-const Rect MIC_BUTTON{SCREEN_W - 300, 0, SCREEN_W - 72, 64};  // CHATGPT: whether ChatGPT hears your microphone
-const Rect ORB_MIC_BUTTON{SCREEN_W / 2 - 150, SCREEN_H - 92, SCREEN_W / 2 + 150, SCREEN_H - 24};
+const Rect MIC_BUTTON{SCREEN_W - 330, 0, SCREEN_W - 80, 64};  // CHATGPT: whether ChatGPT hears your microphone
+const Rect ORB_MIC_BUTTON{SCREEN_W / 2 - 240, SCREEN_H - 104, SCREEN_W / 2 + 240, SCREEN_H - 16};  // big: easy to hit, hard to miss
+const Rect ORB_CHAT_BUTTON{SCREEN_W - 200, 12, SCREEN_W - 16, 76};  // the chat page
+// Keeps every microphone track the page asks for, so they can be switched off (silence) and on again
+const char* const MIC_SCRIPT = R"JS((() => {
+  if (window.__echoMicPatched) return;
+  window.__echoMicPatched = true;
+  window.__echoMuted = false;
+  window.__echoTracks = [];
+  const devices = navigator.mediaDevices;
+  if (!devices || !devices.getUserMedia) return;
+  const original = devices.getUserMedia.bind(devices);
+  devices.getUserMedia = async (constraints) => {
+    const stream = await original(constraints);
+    stream.getAudioTracks().forEach(track => { window.__echoTracks.push(track); track.enabled = !window.__echoMuted; });
+    return stream;
+  };
+  window.__echoMute = (muted) => {
+    window.__echoMuted = muted;
+    window.__echoTracks.forEach(track => { track.enabled = !muted; });
+    return window.__echoTracks.length;
+  };
+})();)JS";
 const Rect RESUME_BUTTON{312, 190, 712, 270}, QUIT_BUTTON{312, 300, 712, 380};
 const Rect BACK_BUTTON{12, 10, 150, 66};
 const Rect DOCK_BUTTON{744, 12, 1008, 64};                  // launcher header
@@ -211,7 +232,7 @@ private:
         if (!session_.launch(app.id)) { message_ = L"Could not start " + app.title + L" (see host.log)."; return; }
         if (app.id == AppId::ChatGpt) {  // the orb follows ChatGPT's voice: the browser's sound, measured
             voiceMeter_.watch(session_.pid());
-            chatMuted_ = false;
+            releaseChatMic();
             lastMuteApply_ = 0;
             chatOrb_ = false;
             chatOrbAuto_ = true;
@@ -839,28 +860,31 @@ private:
         }
     }
 
-    // CHATGPT: the microphone can be muted for ChatGPT only (Windows mutes the browser's recording; Echo's voice chat is not
-    // affected), e.g. to talk to your team. Re-applied every couple of seconds: Chrome records only while voice mode runs.
+    // CHATGPT: the microphone can be muted for ChatGPT only (Echo's voice chat is not affected), e.g. to talk to your team.
+    // A script in the page keeps the microphone tracks it asks for and switches them off and on (MIC_SCRIPT); it is put in
+    // as soon as the browser's DevTools answer, so voice sessions started after the tile opened are covered.
     void applyChatMic(uint64_t now) {
-        if (session_.id() != AppId::ChatGpt || !chatMuted_ || mode_ == Mode::Launcher || now - lastMuteApply_ < 2000) return;
+        if (session_.id() != AppId::ChatGpt || mode_ == Mode::Launcher || now - lastMuteApply_ < 1000) return;
         lastMuteApply_ = now;
-        int changed = setCaptureMuteTree(session_.pid(), true);
-        if (changed) chatMicTouched_ = true;
-        if (changed != lastMuteCount_) hostLog("chatgpt: microphone muted for ChatGPT (%d session(s))", changed);
-        lastMuteCount_ = changed;
+        auto& page = session_.reels();
+        if (!micScriptReady_)
+            micScriptReady_ = page.addStartupScript(MIC_SCRIPT) && page.evaluate(MIC_SCRIPT);
+        if (micScriptReady_ && chatMuted_ != micAppliedMuted_ &&
+            page.evaluate(std::string("window.__echoMute && window.__echoMute(") + (chatMuted_ ? "true" : "false") + ")")) {
+            micAppliedMuted_ = chatMuted_;
+            hostLog("chatgpt: microphone %s for ChatGPT", chatMuted_ ? "muted" : "on");
+        }
     }
     void releaseChatMic() {
-        if (chatMicTouched_) { setCaptureMuteTree(session_.pid(), false); chatMicTouched_ = false; hostLog("chatgpt: microphone on for ChatGPT"); }
-        chatMuted_ = false;
-        lastMuteCount_ = 0;
+        chatMuted_ = micAppliedMuted_ = micScriptReady_ = false;
     }
     void toggleChatMic() {
-        if (chatMuted_) releaseChatMic();
-        else {
-            chatMuted_ = true;
-            lastMuteApply_ = 0;
-            applyChatMic(GetTickCount64());
-        }
+        uint64_t now = GetTickCount64();
+        if (now - lastMicToggle_ < 700) return;  // a second touch of the same press
+        lastMicToggle_ = now;
+        chatMuted_ = !chatMuted_;
+        lastMuteApply_ = 0;
+        applyChatMic(now);
     }
 
     // CHATGPT: in the orb view a tap shows the chat page; on the page the top right button goes back to the orb
@@ -868,8 +892,8 @@ private:
         if (chatOrb_) {
             if (BALATRO_HOME.contains(t.x, t.y)) { if (!t.down) openMenu(); return; }
             if (tapped(t, 460, ORB_MIC_BUTTON)) { toggleChatMic(); return; }
-            if (ORB_MIC_BUTTON.contains(t.x, t.y)) return;
-            if (!t.down && held_.empty()) { chatOrb_ = false; chatOrbAuto_ = false; }
+            if (tapped(t, 462, ORB_CHAT_BUTTON)) { chatOrb_ = false; chatOrbAuto_ = false; return; }
+            if (!t.down) pressed_ = -1;
             return;
         }
         if (ORB_BUTTON.contains(t.x, t.y) && !reelsActive_) { if (!t.down) chatOrb_ = true; return; }
@@ -1034,8 +1058,10 @@ private:
                 int R = std::min(255, int(br + (cr - br) * a)), G = std::min(255, int(bg + (cg - bg) * a)), B = std::min(255, int(bb + (cb - bb) * a));
                 p = rgb(R, G, B);
             }
-        canvas_.text({0, 8, SCREEN_W, 40}, L"tap the orb to show the chat", 18, rgb(110, 120, 140), false);
         micButton(ORB_MIC_BUTTON, pressed_ == 460);
+        canvas_.fill(ORB_CHAT_BUTTON, pressed_ == 462 ? rgb(250, 250, 250) : rgb(30, 34, 50));
+        canvas_.frame(ORB_CHAT_BUTTON, rgb(90, 96, 120), 2);
+        canvas_.text(ORB_CHAT_BUTTON, L"CHAT", 26, pressed_ == 462 ? rgb(20, 20, 20) : rgb(220, 225, 235));
         canvas_.blend(BALATRO_HOME, rgb(0, 0, 0), 150);
         canvas_.text(BALATRO_HOME, L"\x2261", 40, rgb(200, 200, 210));
     }
@@ -1044,7 +1070,7 @@ private:
     void micButton(Rect r, bool on) {
         canvas_.fill(r, on ? rgb(250, 250, 250) : chatMuted_ ? rgb(150, 40, 40) : rgb(40, 110, 60));
         canvas_.frame(r, rgb(235, 235, 235), 2);
-        canvas_.text(r, chatMuted_ ? L"MIC: MUTED" : L"MIC: ON", r.h() > 60 ? 26 : 22, on ? rgb(20, 20, 20) : rgb(255, 255, 255));
+        canvas_.text(r, chatMuted_ ? L"MIC MUTED - TAP TO TALK" : L"MIC ON - TAP TO MUTE", r.h() > 70 ? 30 : 20, on ? rgb(20, 20, 20) : rgb(255, 255, 255));
     }
 
     void drawApp() {
@@ -1348,7 +1374,8 @@ private:
     ProcessAudioMeter voiceMeter_;
     bool chatOrb_ = false, chatOrbAuto_ = false;  // showing the orb; switch to it when ChatGPT first talks
     float orbLevel_ = 0;
-    bool chatMuted_ = false, chatMicTouched_ = false;  // ChatGPT does not hear the microphone; we muted it (unmute on close)
+    bool chatMuted_ = false, micAppliedMuted_ = false, micScriptReady_ = false;  // ChatGPT does not hear the microphone
+    uint64_t lastMicToggle_ = 0;
     uint64_t lastMuteApply_ = 0;
     int lastMuteCount_ = 0;
     FisheyeMap panelFisheye_;

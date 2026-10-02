@@ -15,6 +15,9 @@ public:
     void tap(HWND window, float x, float y);
     void wheel(HWND window, float x, float y, int deltaY);  // + scrolls down (next reel)
     void key(const char* key, const char* code, int virtualKey);
+    // JavaScript in the page now (Runtime.evaluate), and in every page loaded from now on (before its own scripts)
+    bool evaluate(const std::string& js);
+    bool addStartupScript(const std::string& js);
     void disconnect();
     // 1 while the page is Instagram's login (or a login check), 0 when not, -1 unknown. Asks /json/list, no WebSocket.
     static int loginShown(int port);

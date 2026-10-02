@@ -171,3 +171,31 @@ void CdpInput::key(const char* key, const char* code, int virtualKey) {
         if (!sendJson(json)) return;
     }
 }
+
+namespace {
+std::string jsonString(const std::string& text) {
+    std::string out = "\"";
+    for (char c : text) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': break;
+            case '\t': out += "\\t"; break;
+            default: out += c;
+        }
+    }
+    return out + "\"";
+}
+}  // namespace
+
+bool CdpInput::evaluate(const std::string& js) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return sendJson("{\"id\":" + std::to_string(nextId_++) + ",\"method\":\"Runtime.evaluate\",\"params\":{\"expression\":" + jsonString(js) + "}}");
+}
+
+bool CdpInput::addStartupScript(const std::string& js) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return sendJson("{\"id\":" + std::to_string(nextId_++) + ",\"method\":\"Page.addScriptToEvaluateOnNewDocument\",\"params\":{\"source\":" +
+                    jsonString(js) + "}}");
+}
