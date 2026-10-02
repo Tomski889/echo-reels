@@ -8,6 +8,7 @@
 // Mutes or unmutes a process's microphone input (its capture sessions on every active recording device). Other apps keep
 // hearing the microphone. Returns how many sessions were changed (0: the process is not recording right now).
 int setCaptureMute(DWORD pid, bool mute);
+int setCaptureMuteTree(DWORD rootPid, bool mute);  // the same for a process and everything it started (Chrome)
 DWORD findProcess(const wchar_t* exe);  // the first process with that file name, or 0
 
 class ProcessAudioMeter {

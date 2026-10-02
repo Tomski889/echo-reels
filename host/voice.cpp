@@ -100,6 +100,13 @@ int setCaptureMute(DWORD pid, bool mute) {
     return changed;
 }
 
+int setCaptureMuteTree(DWORD rootPid, bool mute) {
+    int changed = 0;
+    if (rootPid)
+        for (DWORD pid : processTree(rootPid)) changed += setCaptureMute(pid, mute);
+    return changed;
+}
+
 DWORD findProcess(const wchar_t* exe) {
     DWORD found = 0;
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
