@@ -70,6 +70,47 @@ std::vector<ComPtr<IAudioMeterInformation>> sessionMeters(DWORD root) {
 
 }  // namespace
 
+int setCaptureMute(DWORD pid, bool mute) {
+    int changed = 0;
+    ComPtr<IMMDeviceEnumerator> devices;
+    ComPtr<IMMDeviceCollection> inputs;
+    UINT count = 0;
+    if (!pid || FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&devices))) ||
+        FAILED(devices->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &inputs)) || FAILED(inputs->GetCount(&count)))
+        return 0;
+    for (UINT d = 0; d < count; d++) {
+        ComPtr<IMMDevice> device;
+        ComPtr<IAudioSessionManager2> manager;
+        ComPtr<IAudioSessionEnumerator> sessions;
+        int n = 0;
+        if (FAILED(inputs->Item(d, &device)) ||
+            FAILED(device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(manager.GetAddressOf()))) ||
+            FAILED(manager->GetSessionEnumerator(&sessions)) || FAILED(sessions->GetCount(&n)))
+            continue;
+        for (int i = 0; i < n; i++) {
+            ComPtr<IAudioSessionControl> control;
+            ComPtr<IAudioSessionControl2> control2;
+            ComPtr<ISimpleAudioVolume> volume;
+            DWORD owner = 0;
+            if (SUCCEEDED(sessions->GetSession(i, &control)) && SUCCEEDED(control.As(&control2)) && SUCCEEDED(control2->GetProcessId(&owner)) &&
+                owner == pid && SUCCEEDED(control.As(&volume)) && SUCCEEDED(volume->SetMute(mute, nullptr)))
+                changed++;
+        }
+    }
+    return changed;
+}
+
+DWORD findProcess(const wchar_t* exe) {
+    DWORD found = 0;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32W entry{sizeof(entry)};
+    for (BOOL ok = Process32FirstW(snapshot, &entry); ok && !found; ok = Process32NextW(snapshot, &entry))
+        if (_wcsicmp(entry.szExeFile, exe) == 0) found = entry.th32ProcessID;
+    CloseHandle(snapshot);
+    return found;
+}
+
 ProcessAudioMeter::ProcessAudioMeter() : thread_(&ProcessAudioMeter::run, this) {}
 
 ProcessAudioMeter::~ProcessAudioMeter() {

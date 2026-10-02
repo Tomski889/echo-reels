@@ -30,6 +30,8 @@ const Rect STICK_AREA{1, 201, 199, 399}, STICK_TOGGLE{16, 412, 184, 458};
 const Rect RETRO_HOME{108, 470, 184, 526}, RETRO_MENU{936, 470, 1012, 526};
 const Rect BALATRO_HOME{0, 0, 64, 64};
 const Rect ORB_BUTTON{SCREEN_W - 64, 0, SCREEN_W, 64};  // CHATGPT: back to the orb from the chat page
+const Rect MIC_BUTTON{SCREEN_W - 300, 0, SCREEN_W - 72, 64};  // CHATGPT: Echo's microphone (teammates) muted or live
+const Rect ORB_MIC_BUTTON{SCREEN_W / 2 - 150, SCREEN_H - 92, SCREEN_W / 2 + 150, SCREEN_H - 24};
 const Rect RESUME_BUTTON{312, 190, 712, 270}, QUIT_BUTTON{312, 300, 712, 380};
 const Rect BACK_BUTTON{12, 10, 150, 66};
 const Rect DOCK_BUTTON{744, 12, 1008, 64};                  // launcher header
@@ -112,6 +114,7 @@ public:
                 appClosed();
             }
             if (mode_ == Mode::PlexLink) pollPlexLink(now);
+            applyEchoMic(now);
             if (mode_ == Mode::Camera) pollCamera(now);
             reportPlexProgress(now);
             pollDock();
@@ -131,6 +134,7 @@ public:
         }
         session_.kill();
         if (mode_ == Mode::Camera) setHandCamera(config_, false);
+        releaseEchoMic();
         if (panel_) { panel_->visible = 0; UnmapViewOfFile(panel_); }
         if (panelMap_) CloseHandle(panelMap_);
     }
@@ -187,6 +191,7 @@ private:
     }
     void appClosed() {
         voiceMeter_.watch(0);
+        releaseEchoMic();
         finishPlex();
         lightGun_.appClosed();
         gunUsed_ = false;
@@ -206,6 +211,8 @@ private:
         if (!session_.launch(app.id)) { message_ = L"Could not start " + app.title + L" (see host.log)."; return; }
         if (app.id == AppId::ChatGpt) {  // the orb follows ChatGPT's voice: the browser's sound, measured
             voiceMeter_.watch(session_.pid());
+            echoMuted_ = true;  // teammates should not hear you talking to ChatGPT (toggle on the tablet)
+            lastMuteApply_ = 0;
             chatOrb_ = false;
             chatOrbAuto_ = true;
             orbLevel_ = 0;
@@ -832,14 +839,38 @@ private:
         }
     }
 
+    // CHATGPT: Echo's microphone is muted while the tile is open (Windows mutes Echo's recording only; Chrome still hears
+    // you). Re-applied every couple of seconds: Echo starts recording only when voice chat needs it.
+    void applyEchoMic(uint64_t now) {
+        if (session_.id() != AppId::ChatGpt || mode_ == Mode::Launcher || mode_ == Mode::Browse || now - lastMuteApply_ < 2000) return;
+        lastMuteApply_ = now;
+        DWORD echo = findProcess(L"echovr.exe");
+        int changed = setCaptureMute(echo, echoMuted_);
+        if (echoMuted_ && changed) echoMicTouched_ = true;
+        if (changed && changed != lastMuteCount_) hostLog("chatgpt: Echo microphone %s (%d session(s))", echoMuted_ ? "muted" : "live", changed);
+        lastMuteCount_ = changed;
+    }
+    void releaseEchoMic() {
+        if (echoMicTouched_) { setCaptureMute(findProcess(L"echovr.exe"), false); echoMicTouched_ = false; hostLog("chatgpt: Echo microphone live again"); }
+        echoMuted_ = false;
+    }
+    void toggleEchoMic() {
+        echoMuted_ = !echoMuted_;
+        lastMuteApply_ = 0;
+        applyEchoMic(GetTickCount64());
+    }
+
     // CHATGPT: in the orb view a tap shows the chat page; on the page the top right button goes back to the orb
     void chatTouch(const Touch& t) {
         if (chatOrb_) {
             if (BALATRO_HOME.contains(t.x, t.y)) { if (!t.down) openMenu(); return; }
+            if (tapped(t, 460, ORB_MIC_BUTTON)) { toggleEchoMic(); return; }
+            if (ORB_MIC_BUTTON.contains(t.x, t.y)) return;
             if (!t.down && held_.empty()) { chatOrb_ = false; chatOrbAuto_ = false; }
             return;
         }
         if (ORB_BUTTON.contains(t.x, t.y) && !reelsActive_) { if (!t.down) chatOrb_ = true; return; }
+        if (MIC_BUTTON.contains(t.x, t.y) && !reelsActive_) { if (tapped(t, 461, MIC_BUTTON)) toggleEchoMic(); return; }
         reelsTouch(t);
     }
 
@@ -1000,9 +1031,17 @@ private:
                 int R = std::min(255, int(br + (cr - br) * a)), G = std::min(255, int(bg + (cg - bg) * a)), B = std::min(255, int(bb + (cb - bb) * a));
                 p = rgb(R, G, B);
             }
-        canvas_.text({0, SCREEN_H - 50, SCREEN_W, SCREEN_H - 14}, L"tap to show the chat", 18, rgb(110, 120, 140), false);
+        canvas_.text({0, 8, SCREEN_W, 40}, L"tap the orb to show the chat", 18, rgb(110, 120, 140), false);
+        micButton(ORB_MIC_BUTTON, pressed_ == 460);
         canvas_.blend(BALATRO_HOME, rgb(0, 0, 0), 150);
         canvas_.text(BALATRO_HOME, L"\x2261", 40, rgb(200, 200, 210));
+    }
+
+    // Echo's microphone state: red while teammates cannot hear you
+    void micButton(Rect r, bool on) {
+        canvas_.fill(r, on ? rgb(250, 250, 250) : echoMuted_ ? rgb(150, 40, 40) : rgb(40, 110, 60));
+        canvas_.frame(r, rgb(235, 235, 235), 2);
+        canvas_.text(r, echoMuted_ ? L"ECHO MIC: MUTED" : L"ECHO MIC: LIVE", r.h() > 60 ? 24 : 20, on ? rgb(20, 20, 20) : rgb(255, 255, 255));
     }
 
     void drawApp() {
@@ -1031,9 +1070,10 @@ private:
         else {
             canvas_.blend(BALATRO_HOME, rgb(0, 0, 0), 150);
             canvas_.text(BALATRO_HOME, L"\x2261", 40, rgb(255, 255, 255));
-            if (session_.id() == AppId::ChatGpt) {  // back to the orb
+            if (session_.id() == AppId::ChatGpt) {  // back to the orb, and Echo's microphone
                 canvas_.blend(ORB_BUTTON, rgb(0, 0, 0), 150);
                 canvas_.text(ORB_BUTTON, L"\x25C9", 36, rgb(120, 190, 255));
+                micButton(MIC_BUTTON, pressed_ == 461);
             }
         }
     }
@@ -1305,6 +1345,9 @@ private:
     ProcessAudioMeter voiceMeter_;
     bool chatOrb_ = false, chatOrbAuto_ = false;  // showing the orb; switch to it when ChatGPT first talks
     float orbLevel_ = 0;
+    bool echoMuted_ = false, echoMicTouched_ = false;  // Echo's microphone muted for the CHATGPT tile; we muted it (unmute on close)
+    uint64_t lastMuteApply_ = 0;
+    int lastMuteCount_ = 0;
     FisheyeMap panelFisheye_;
     std::vector<uint32_t> panelViewCopy_;  // shutter shown pressed briefly after an instant shot
     int panelPressed_ = -1;
