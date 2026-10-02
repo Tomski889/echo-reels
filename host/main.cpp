@@ -6,6 +6,8 @@
 #include "panel_ipc.h"
 #include "voice.h"
 #include "spatial.h"
+#include <timeapi.h>
+#pragma comment(lib, "winmm.lib")
 #include <winrt/base.h>
 #include <algorithm>
 #include <functional>
@@ -1450,6 +1452,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR cmdLine, int) {
     HANDLE single = CreateMutexW(nullptr, TRUE, L"Local\\EchoArcade.Host");
     if (GetLastError() == ERROR_ALREADY_EXISTS) return 0;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    // The host has no focused window: keep Windows from throttling it (efficiency mode), and keep Sleep(4) at 4 ms
+    PROCESS_POWER_THROTTLING_STATE throttling{PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, 0};
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof(throttling));
+    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+    timeBeginPeriod(1);
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     bool standalone = wcsstr(cmdLine, L"--standalone") != nullptr;
     HANDLE mapping = nullptr;

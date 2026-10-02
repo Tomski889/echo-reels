@@ -107,15 +107,21 @@ int setCaptureMuteTree(DWORD rootPid, bool mute) {
     return changed;
 }
 
+// The graphics card's scheduling priority (gdi32 D3DKMTSetProcessSchedulingPriorityClass; 3 = above normal): while Echo
+// has the focus, Windows lets its GPU work go first and the browser's frames wait
+using GpuPriority = LONG(WINAPI*)(HANDLE process, int priorityClass);
+
 int boostProcessTree(DWORD rootPid) {
     int changed = 0;
     if (!rootPid) return 0;
+    static GpuPriority gpuPriority = reinterpret_cast<GpuPriority>(GetProcAddress(GetModuleHandleW(L"gdi32.dll"), "D3DKMTSetProcessSchedulingPriorityClass"));
     for (DWORD pid : processTree(rootPid)) {
         HANDLE process = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if (!process) continue;
         PROCESS_POWER_THROTTLING_STATE throttling{PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, 0};
         bool ok = SetProcessInformation(process, ProcessPowerThrottling, &throttling, sizeof(throttling)) != 0;
         if (GetPriorityClass(process) != ABOVE_NORMAL_PRIORITY_CLASS) ok = SetPriorityClass(process, ABOVE_NORMAL_PRIORITY_CLASS) && ok;
+        if (gpuPriority) gpuPriority(process, 3);
         CloseHandle(process);
         changed += ok;
     }
