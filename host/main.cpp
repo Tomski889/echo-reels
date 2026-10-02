@@ -6,6 +6,7 @@
 #include "panel_ipc.h"
 #include "voice.h"
 #include "spatial.h"
+#include "party.h"
 #include <timeapi.h>
 #pragma comment(lib, "winmm.lib")
 #include <winrt/base.h>
@@ -56,6 +57,71 @@ const char* const UNMUTE_SCRIPT = R"JS((() => {
   document.addEventListener('play', unmute, true);
   setInterval(unmute, 500);
 })();)JS";
+// WATCH PARTY (party.h): the host reads what its page is playing (__echoPartyState: link, time, paused); guests open the
+// same video and keep its time (__echoPartyApply). Guests only ever go to instagram.com or tiktok.com addresses.
+const char* const PARTY_SCRIPT = R"JS((() => {
+  if (window.__echoPartyState) return;
+  const tiktok = location.hostname.includes('tiktok.com');
+  const active = () => {  // the video filling most of the window
+    let best = null, bestArea = 0;
+    for (const v of document.querySelectorAll('video')) {
+      const r = v.getBoundingClientRect();
+      const w = Math.min(r.right, innerWidth) - Math.max(r.left, 0), h = Math.min(r.bottom, innerHeight) - Math.max(r.top, 0);
+      if (w > 0 && h > 0 && w * h > bestArea) { bestArea = w * h; best = v; }
+    }
+    return best;
+  };
+  // Instagram shows the reel's id in the address; TikTok's feed keeps it in the page, near the video
+  const link = v => {
+    const reel = /\/reels?\/([\w-]+)/.exec(location.pathname);
+    if (reel) return 'https://www.instagram.com/reels/' + reel[1] + '/';
+    if (/\/video\/\d+/.test(location.pathname)) return location.origin + location.pathname;
+    for (let e = v, depth = 0; e && depth < 14; e = e.parentElement, depth++) {
+      const id = tiktok && /(\d{18,20})/.exec(e.id || '');
+      if (id) return 'https://www.tiktok.com/@/video/' + id[1];
+      const a = e.querySelector && e.querySelector('a[href*="/video/"], a[href*="/reel/"]');
+      if (a) return a.href.split('?')[0];
+    }
+    return '';
+  };
+  const key = u => { const m = /\/(?:reels?|video)\/([\w-]+)/.exec(u || ''); return m ? m[1] : u; };
+  window.__echoPartyState = () => {
+    const v = active(), url = v ? link(v) : '';
+    return url ? JSON.stringify({url, t: Math.round(v.currentTime * 10) / 10, paused: v.paused}) : '';
+  };
+  window.__echoPartyApply = s => {
+    if (!s || typeof s.url !== 'string') return;
+    let target;
+    try { target = new URL(s.url); } catch (e) { return; }
+    if (target.protocol !== 'https:' || !/(^|\.)(instagram|tiktok)\.com$/.test(target.hostname)) return;
+    // A new video means loading its page: Instagram ignores in-page address changes (tested), so there is no faster way
+    const v = active();
+    if (!v || key(link(v)) !== key(target.pathname)) {
+      // the same address again only after 15 s, in case the site shows the video under another one
+      let last = {};
+      try { last = JSON.parse(sessionStorage.__echoPartyGo || '{}'); } catch (e) {}
+      if (last.url === target.href && Date.now() - last.at < 15000) return;
+      sessionStorage.__echoPartyGo = JSON.stringify({url: target.href, at: Date.now()});
+      location.href = target.href;
+      return;
+    }
+    if (!v) return;
+    if (typeof s.t === 'number' && Math.abs(v.currentTime - s.t) > 1.5) v.currentTime = s.t + (s.paused ? 0 : 0.3);
+    if (s.paused && !v.paused) v.pause();
+    else if (!s.paused && v.paused) v.play().catch(() => {});
+  };
+})();)JS";
+
+// A JavaScript string literal
+std::string jsString(const std::string& text) {
+    std::string out = "\"";
+    for (unsigned char c : text) {
+        if (c == '"' || c == '\\') { out += '\\'; out += char(c); }
+        else if (c < 0x20) { char b[8]; snprintf(b, sizeof(b), "\\u%04x", c); out += b; }
+        else out += char(c);
+    }
+    return out + "\"";
+}
 // Keeps every microphone track the page asks for, so they can be switched off (silence) and on again
 const char* const MIC_SCRIPT = R"JS((() => {
   if (window.__echoMicPatched) return;
@@ -160,6 +226,7 @@ public:
             if (mode_ == Mode::PlexLink) pollPlexLink(now);
             applyChatMic(now);
             applyUnmute(now);
+            pollParty(now);
             if (mode_ == Mode::Camera) pollCamera(now);
             reportPlexProgress(now);
             pollDock();
@@ -256,7 +323,7 @@ private:
         if (app.id == AppId::Plex) { openPlex(); return; }
         if (app.id == AppId::Camera) { openCamera(); return; }
         if (!session_.launch(app.id)) { message_ = L"Could not start " + app.title + L" (see host.log)."; return; }
-        unmuteReady_ = false;
+        unmuteReady_ = startupScriptsAdded_ = false;
         if ((app.id == AppId::Reels || app.id == AppId::TikTok) && config_.spatialAudio) spatial_.start(session_.pid());
         if (app.id == AppId::ChatGpt) {  // the orb follows ChatGPT's voice: the browser's sound, measured
             voiceMeter_.watch(session_.pid());
@@ -682,7 +749,71 @@ private:
         hostLog("settings: 3D sound %s", on ? "on" : "off");
     }
 
+    // WATCH PARTY row, below 3D SOUND: HOST / JOIN, or STOP while in a party; JOIN opens a number pad for the code
+    int partyY() const { return settingY(settings_.size()) + 150; }
+    Rect partyButtonA() const { return {560, partyY() + 10, 770, partyY() + 84}; }
+    Rect partyButtonB() const { return {794, partyY() + 10, 1004, partyY() + 84}; }
+    static Rect keypadKey(int i) { int col = i % 3, row = i / 3; return {262 + col * 170, 170 + row * 92, 422 + col * 170, 252 + row * 92}; }
+    static constexpr const wchar_t* KEYPAD_LABELS[12] = {L"1", L"2", L"3", L"4", L"5", L"6", L"7", L"8", L"9", L"CANCEL", L"0", L"\x232B"};
+
+    void partyTouch(const Touch& t) {
+        if (config_.partyServer.empty()) return;
+        if (party_.active()) {
+            if (tapped(t, 662, partyButtonB())) { party_.stop(); hostLog("party: left"); }
+            return;
+        }
+        if (tapped(t, 660, partyButtonA())) startParty(true, "");
+        else if (tapped(t, 661, partyButtonB())) { partyKeypad_ = true; partyDigits_.clear(); }
+    }
+    void keypadTouch(const Touch& t) {
+        for (int i = 0; i < 12; i++) {
+            if (!tapped(t, 700 + i, keypadKey(i))) continue;
+            if (i == 9) partyKeypad_ = false;
+            else if (i == 11) { if (!partyDigits_.empty()) partyDigits_.pop_back(); }
+            else {
+                partyDigits_ += char('0' + (i == 10 ? 0 : i + 1));
+                if (partyDigits_.size() == 4) { partyKeypad_ = false; startParty(false, partyDigits_); }
+            }
+            return;
+        }
+        if (!t.down) pressed_ = -1;
+    }
+    void drawKeypad() {
+        canvas_.clear(rgb(14, 16, 24));
+        header(L"JOIN WATCH PARTY", false);
+        std::wstring shown;
+        for (int i = 0; i < 4; i++) shown += i < int(partyDigits_.size()) ? wchar_t(partyDigits_[i]) : L'_', shown += L' ';
+        canvas_.text({0, 76, SCREEN_W, 160}, shown, 56, rgb(90, 200, 255), true, 1);
+        for (int i = 0; i < 12; i++) button(keypadKey(i), KEYPAD_LABELS[i], pressed_ == 700 + i, i == 9 ? rgb(70, 50, 50) : rgb(44, 50, 72), i == 9 ? 24 : 36);
+    }
+    void drawParty() {
+        int y = partyY();
+        std::wstring title = L"WATCH PARTY", line;
+        uint32_t lineColor = rgb(150, 160, 180);
+        std::string error = party_.active() ? party_.error() : "";
+        if (config_.partyServer.empty()) line = L"Needs party_server in arcade.ini (party-server\\README.md)";
+        else if (!party_.active()) line = L"Watch REELS / TIKTOK with friends who have Echo Arcade";
+        else {
+            std::string code = party_.code();
+            title += L"  " + std::wstring(code.begin(), code.end());
+            if (!error.empty()) { line = std::wstring(error.begin(), error.end()); lineColor = rgb(230, 150, 90); }
+            else if (!party_.connected()) line = L"Connecting...";
+            else if (party_.host()) line = std::to_wstring(party_.guests()) + (party_.guests() == 1 ? L" friend watching" : L" friends watching") + L" - tell them the code";
+            else line = L"Following the host's REELS / TIKTOK";
+        }
+        canvas_.text({24, y, 560, y + 50}, title, 26, rgb(235, 235, 240), true, 0);
+        canvas_.text({24, y + 46, 560, y + 90}, line, 18, lineColor, false, 0);
+        if (config_.partyServer.empty()) return;
+        if (party_.active()) button(partyButtonB(), party_.host() ? L"STOP" : L"LEAVE", pressed_ == 662, rgb(70, 50, 50), 30);
+        else {
+            button(partyButtonA(), L"HOST", pressed_ == 660, rgb(40, 90, 120), 30);
+            button(partyButtonB(), L"JOIN", pressed_ == 661, rgb(40, 90, 120), 30);
+        }
+    }
+
     void settingsTouch(const Touch& t) {
+        if (partyKeypad_) { keypadTouch(t); return; }
+        if (partyButtonA().contains(t.x, t.y) || partyButtonB().contains(t.x, t.y)) { partyTouch(t); return; }
         if (tapped(t, 650, spatialToggle())) { setSpatialAudio(!config_.spatialAudio); return; }
         for (size_t i = 0; i < settings_.size(); i++) {
             auto& s = settings_[i];
@@ -699,6 +830,7 @@ private:
     }
 
     void drawSettings() {
+        if (partyKeypad_) { drawKeypad(); return; }
         canvas_.clear(rgb(14, 16, 24));
         header(L"SETTINGS", false);
         for (size_t i = 0; i < settings_.size(); i++) {
@@ -720,6 +852,7 @@ private:
         canvas_.text({24, y, 720, y + 50}, L"3D SOUND", 26, rgb(235, 235, 240), true, 0);
         canvas_.text({24, y + 46, 720, y + 90}, L"REELS and TIKTOK sound comes from the tablet", 18, rgb(150, 160, 180), false, 0);
         button(spatialToggle(), config_.spatialAudio ? L"ON" : L"OFF", pressed_ == 650, config_.spatialAudio ? rgb(40, 110, 60) : rgb(70, 50, 50), 30);
+        drawParty();
         canvas_.text({24, 516, 1004, 572}, L"Saved instantly; the tablet size and 3D sound change live. "
                      L"View (FOV) is set in echo_tweaks.ini.", 17, rgb(150, 160, 180), false, 0);
     }
@@ -923,15 +1056,91 @@ private:
             hostLog("chatgpt: microphone %s for ChatGPT", chatMuted_ ? "muted" : "on");
         }
     }
-    // REELS / TIKTOK: the unmute script, put in as soon as the browser's DevTools answer (and kept for pages loaded later)
+    // REELS / TIKTOK: the unmute and watch party scripts. Instagram reloads its page after it opens, which drops scripts
+    // put in earlier, so every 2 s a worker asks the page whether they are there and puts them back if not.
     void applyUnmute(uint64_t now) {
         if (mode_ != Mode::Running && mode_ != Mode::Menu) return;
         AppId id = session_.id();
-        if ((id != AppId::Reels && id != AppId::TikTok) || unmuteReady_ || now - lastUnmuteTry_ < 1000) return;
+        if ((id != AppId::Reels && id != AppId::TikTok) || !session_.alive() || unmuteChecking_ || now - lastUnmuteTry_ < 2000) return;
         lastUnmuteTry_ = now;
-        auto& page = session_.reels();
-        unmuteReady_ = page.addStartupScript(UNMUTE_SCRIPT) && page.evaluate(UNMUTE_SCRIPT);
-        if (unmuteReady_) hostLog("browser: videos unmuted");
+        unmuteChecking_ = true;
+        spawn([this] {
+            auto& page = session_.reels();
+            std::string there = page.evaluateString("(window.__echoUnmute && window.__echoPartyState) ? 'yes' : 'no'", 800);
+            if (there == "no") {
+                if (!startupScriptsAdded_) startupScriptsAdded_ = page.addStartupScript(UNMUTE_SCRIPT) && page.addStartupScript(PARTY_SCRIPT);
+                if (page.evaluate(UNMUTE_SCRIPT) && page.evaluate(PARTY_SCRIPT)) hostLog("browser: unmute and watch party scripts put in");
+            }
+            unmuteReady_ = there == "yes";
+            unmuteChecking_ = false;
+        });
+    }
+
+    // ------------------------------------------------ WATCH PARTY
+    // Host: 4 times a second, what its REELS / TIKTOK page plays goes to the relay (read on a worker: it waits for the page).
+    // Guest: opens the host's tile (once per join), then follows the host's video.
+    void pollParty(uint64_t now) {
+        if (!party_.active()) return;
+        AppId id = session_.id();
+        bool feed = (id == AppId::Reels || id == AppId::TikTok) && session_.alive() && (mode_ == Mode::Running || mode_ == Mode::Menu);
+        if (party_.host()) {
+            std::string state;
+            {
+                std::lock_guard<std::mutex> lock(partyLock_);
+                state.swap(partyState_);
+            }
+            if (state.size() > 2 && state.front() == '{') {
+                std::string message = std::string("{\"app\":\"") + (partyStateApp_ == AppId::TikTok ? "tiktok" : "reels") + "\"," + state.substr(1);
+                // At once when the video or pausing changes; otherwise the time once a second (every 5 s while paused)
+                size_t t0 = message.find(",\"t\":"), t1 = message.find(",\"paused\":");
+                std::string what = t0 != std::string::npos && t1 > t0 ? message.substr(0, t0) + message.substr(t1) : message;
+                bool paused = message.find("\"paused\":true") != std::string::npos;
+                if ((what != lastPartySent_ || now - lastPartySend_ >= (paused ? 5000u : 1000u)) && party_.send(message)) {
+                    lastPartySent_ = what;
+                    lastPartySend_ = now;
+                }
+            }
+            if (!feed || !unmuteReady_ || partyReading_ || now - lastPartyRead_ < 250) return;
+            lastPartyRead_ = now;
+            partyReading_ = true;
+            partyStateApp_ = id;
+            spawn([this] {
+                std::string s = session_.reels().evaluateString("window.__echoPartyState ? window.__echoPartyState() : ''", 800);
+                std::lock_guard<std::mutex> lock(partyLock_);
+                partyState_ = s;
+                partyReading_ = false;
+            });
+            return;
+        }
+        std::string message;
+        if (party_.take(message)) { partyMessage_ = message; partyApplied_ = false; }
+        if (partyMessage_.empty() || partyApplied_) return;
+        AppId want = partyMessage_.find("\"app\":\"tiktok\"") != std::string::npos ? AppId::TikTok : AppId::Reels;
+        if (feed && id != want) {
+            message_ = std::wstring(L"WATCH PARTY: the host is watching ") + (want == AppId::TikTok ? L"TIKTOK" : L"REELS") + L"; close this tile to follow.";
+            partyLaunched_ = false;  // closing it opens the host's
+            return;
+        }
+        if (!partyLaunched_ && mode_ == Mode::Launcher) {
+            partyLaunched_ = true;
+            for (auto& app : apps_)
+                if (app.id == want) { launch(app); return; }
+            message_ = L"WATCH PARTY: the host's tile is not on this tablet.";
+            return;
+        }
+        if (!feed || id != want || !unmuteReady_) return;
+        partyLaunched_ = true;
+        if (session_.reels().evaluate("window.__echoPartyApply && window.__echoPartyApply(JSON.parse(" + jsString(partyMessage_) + "))"))
+            partyApplied_ = true;
+    }
+    void startParty(bool host, const std::string& code) {
+        party_.start(config_.partyServer, code, host);
+        partyMessage_.clear();
+        lastPartySent_.clear();
+        partyLaunched_ = partyApplied_ = false;
+        // Straight onto the nearest lobby poster, so the party is seen without holding up the tablet
+        if (!docked() && !dockPending()) requestDock(true);
+        hostLog("party: %s %s", host ? "hosting" : "joining", host ? "" : code.c_str());
     }
 
     void releaseChatMic() {
@@ -1436,7 +1645,17 @@ private:
     float orbLevel_ = 0;
     bool chatMuted_ = false, micAppliedMuted_ = false, micScriptReady_ = false;  // ChatGPT does not hear the microphone
     uint64_t lastMicToggle_ = 0, lastWindowsUnmute_ = 0, lastUnmuteTry_ = 0;
-    bool unmuteReady_ = false;  // REELS / TIKTOK: the unmute script is in the page
+    std::atomic<bool> unmuteReady_{false};  // REELS / TIKTOK: the unmute and watch party scripts are in the page (last check)
+    std::atomic<bool> unmuteChecking_{false}, startupScriptsAdded_{false};
+    // WATCH PARTY
+    PartyLink party_;
+    std::mutex partyLock_;
+    std::string partyState_;           // host: the page's state, from the worker
+    std::atomic<bool> partyReading_{false};
+    AppId partyStateApp_ = AppId::Reels;
+    std::string lastPartySent_, partyMessage_, partyDigits_;
+    uint64_t lastPartyRead_ = 0, lastPartySend_ = 0;
+    bool partyLaunched_ = false, partyApplied_ = false, partyKeypad_ = false;
     bool micGranted_ = false;  // chatgpt.com may use the microphone (granted through DevTools)
     uint64_t lastMuteApply_ = 0;
     int lastMuteCount_ = 0;

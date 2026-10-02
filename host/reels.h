@@ -3,6 +3,7 @@
 // protocol on 127.0.0.1, so taps and swipes reach the page without focusing its window.
 #include <windows.h>
 #include <atomic>
+#include <condition_variable>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -18,6 +19,8 @@ public:
     // JavaScript in the page now (Runtime.evaluate), and in every page loaded from now on (before its own scripts)
     bool evaluate(const std::string& js);
     bool addStartupScript(const std::string& js);
+    // Runs js in the page and returns its result, which must be a string ("" on failure or after timeoutMs)
+    std::string evaluateString(const std::string& js, DWORD timeoutMs);
     // A command for the whole browser (its own DevTools socket, e.g. Browser.grantPermissions); true once sent
     bool browserCommand(const std::string& json);
     void disconnect();
@@ -39,4 +42,9 @@ private:
     std::atomic<bool> broken_{false};
     int nextId_ = 1;
     uint64_t lastAttempt_ = 0;
+    // evaluateString: the reply the reader waits for
+    std::mutex replyMutex_;
+    std::condition_variable replyReady_;
+    int waitId_ = 0;
+    std::string reply_;
 };

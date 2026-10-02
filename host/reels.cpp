@@ -102,7 +102,17 @@ void CdpInput::reader() {
         if (WinHttpWebSocketReceive(socket_, buffer.data(), DWORD(buffer.size()), &read, &type) != NO_ERROR ||
             type == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE) {
             broken_ = true;
+            replyReady_.notify_all();
             return;
+        }
+        std::lock_guard<std::mutex> lock(replyMutex_);
+        if (waitId_ && type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE) {
+            std::string message(buffer.data(), read);
+            if (message.rfind("{\"id\":" + std::to_string(waitId_) + ",", 0) == 0) {
+                reply_ = std::move(message);
+                waitId_ = 0;
+                replyReady_.notify_all();
+            }
         }
     }
 }
@@ -192,6 +202,60 @@ std::string jsonString(const std::string& text) {
 bool CdpInput::evaluate(const std::string& js) {
     std::lock_guard<std::mutex> lock(mutex_);
     return sendJson("{\"id\":" + std::to_string(nextId_++) + ",\"method\":\"Runtime.evaluate\",\"params\":{\"expression\":" + jsonString(js) + "}}");
+}
+
+// The string value in a Runtime.evaluate reply: ..."result":{"type":"string","value":"..."}
+static std::string replyString(const std::string& reply) {
+    const std::string marker = "\"type\":\"string\",\"value\":\"";
+    size_t at = reply.find(marker);
+    if (at == std::string::npos) return "";
+    std::string out;
+    for (size_t i = at + marker.size(); i < reply.size(); i++) {
+        char c = reply[i];
+        if (c == '"') return out;
+        if (c != '\\' || i + 1 >= reply.size()) { out += c; continue; }
+        char e = reply[++i];
+        switch (e) {
+            case 'n': out += '\n'; break;
+            case 't': out += '\t'; break;
+            case 'r': out += '\r'; break;
+            case 'b': case 'f': break;
+            case 'u': {  // \uXXXX as UTF-8
+                if (i + 4 >= reply.size()) return "";
+                unsigned code = std::stoul(reply.substr(i + 1, 4), nullptr, 16);
+                i += 4;
+                if (code < 0x80) out += char(code);
+                else if (code < 0x800) { out += char(0xc0 | code >> 6); out += char(0x80 | (code & 0x3f)); }
+                else { out += char(0xe0 | code >> 12); out += char(0x80 | (code >> 6 & 0x3f)); out += char(0x80 | (code & 0x3f)); }
+                break;
+            }
+            default: out += e;
+        }
+    }
+    return "";
+}
+
+std::string CdpInput::evaluateString(const std::string& js, DWORD timeoutMs) {
+    int id;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        id = nextId_++;
+        {
+            std::lock_guard<std::mutex> reply(replyMutex_);
+            waitId_ = id;
+            reply_.clear();
+        }
+        if (!sendJson("{\"id\":" + std::to_string(id) + ",\"method\":\"Runtime.evaluate\",\"params\":{\"expression\":" + jsonString(js) +
+                      ",\"returnByValue\":true}}")) {
+            std::lock_guard<std::mutex> reply(replyMutex_);
+            waitId_ = 0;
+            return "";
+        }
+    }
+    std::unique_lock<std::mutex> reply(replyMutex_);
+    replyReady_.wait_for(reply, std::chrono::milliseconds(timeoutMs), [&] { return waitId_ != id || broken_; });
+    if (waitId_ == id) { waitId_ = 0; return ""; }
+    return replyString(reply_);
 }
 
 bool CdpInput::addStartupScript(const std::string& js) {

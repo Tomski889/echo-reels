@@ -10,3 +10,5 @@ __pycache__/
 *.pyc
 # Derived from your game data by tools/build_poster_table.py (build.cmd makes it)
 /native/generated/posters.h
+# Cloudflare deploy cache (party-server)
+.wrangler/
