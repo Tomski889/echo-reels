@@ -7,6 +7,10 @@
 #include <atomic>
 #include <thread>
 
+// The browser tree's per-app volume back to full. Windows remembers it per app, and 3D sound sets it to 1 %, so a host that
+// ended without setting it back (Echo closed) leaves the browser almost silent next time. Any thread.
+void restoreBrowserVolume(DWORD root);
+
 class SpatialAudio {
 public:
     ~SpatialAudio() { stop(); }

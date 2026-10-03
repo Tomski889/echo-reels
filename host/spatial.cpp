@@ -244,3 +244,9 @@ void SpatialAudio::run(DWORD root) {
     hostLog("spatial audio: off");
     CoUninitialize();
 }
+
+void restoreBrowserVolume(DWORD root) {
+    HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    setTreeVolume(root, 1.f);
+    if (SUCCEEDED(com)) CoUninitialize();
+}

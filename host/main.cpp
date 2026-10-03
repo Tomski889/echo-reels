@@ -226,6 +226,7 @@ public:
             if (mode_ == Mode::PlexLink) pollPlexLink(now);
             applyChatMic(now);
             applyUnmute(now);
+            keepBrowserVolume(now);
             pollParty(now);
             if (mode_ == Mode::Camera) pollCamera(now);
             reportPlexProgress(now);
@@ -322,6 +323,7 @@ private:
         if (app.id == AppId::Movies) { openMovies(); return; }
         if (app.id == AppId::Plex) { openPlex(); return; }
         if (app.id == AppId::Camera) { openCamera(); return; }
+        session_.reels().clearStartupScripts();  // the scripts of the last browser tile
         if (!session_.launch(app.id)) { message_ = L"Could not start " + app.title + L" (see host.log)."; return; }
         unmuteReady_ = startupScriptsAdded_ = false;
         if ((app.id == AppId::Reels || app.id == AppId::TikTok) && config_.spatialAudio) spatial_.start(session_.pid());
@@ -1048,10 +1050,19 @@ private:
             micGranted_ = page.browserCommand(R"({"id":1,"method":"Browser.grantPermissions","params":{"origin":"https://chatgpt.com","permissions":["audioCapture"]}})");
         // An earlier build muted the browser's recording in Windows (which remembers it per app): keep it unmuted
         if (now - lastWindowsUnmute_ > 3000) { setCaptureMuteTree(session_.pid(), false); lastWindowsUnmute_ = now; }
-        if (!micScriptReady_)
+        if (!micScriptReady_) {
             micScriptReady_ = page.addStartupScript(MIC_SCRIPT) && page.evaluate(MIC_SCRIPT);
-        if (micScriptReady_ && chatMuted_ != micAppliedMuted_ &&
-            page.evaluate(std::string("window.__echoMute && window.__echoMute(") + (chatMuted_ ? "true" : "false") + ")")) {
+            // ChatGPT keeps its own copy of the microphone function from when it loaded, which the patch above misses:
+            // reloading once puts the patch in before ChatGPT's own scripts
+            if (micScriptReady_ && !chatReloaded_ && page.evaluate("location.reload()")) {
+                chatReloaded_ = true;
+                hostLog("chatgpt: page reloaded so the mute is in place first");
+            }
+        }
+        // While muted it is sent every second, so a reloaded page gets it too (not while on: ChatGPT's own mute button would
+        // be undone)
+        if (micScriptReady_ && (chatMuted_ || chatMuted_ != micAppliedMuted_) && page.evaluate(std::string("window.__echoMute && window.__echoMute(") + (chatMuted_ ? "true" : "false") + ")") &&
+            chatMuted_ != micAppliedMuted_) {
             micAppliedMuted_ = chatMuted_;
             hostLog("chatgpt: microphone %s for ChatGPT", chatMuted_ ? "muted" : "on");
         }
@@ -1074,6 +1085,15 @@ private:
             unmuteReady_ = there == "yes";
             unmuteChecking_ = false;
         });
+    }
+
+    // Browser tiles without 3D sound: full volume (restoreBrowserVolume: an earlier 3D sound may have left it at 1 %)
+    void keepBrowserVolume(uint64_t now) {
+        if (!isFeed(session_.id()) || !session_.alive() || spatial_.running() || volumeChecking_ || now - lastVolumeCheck_ < 2000) return;
+        lastVolumeCheck_ = now;
+        volumeChecking_ = true;
+        DWORD pid = session_.pid();
+        spawn([this, pid] { restoreBrowserVolume(pid); volumeChecking_ = false; });
     }
 
     // ------------------------------------------------ WATCH PARTY
@@ -1144,7 +1164,7 @@ private:
     }
 
     void releaseChatMic() {
-        chatMuted_ = micAppliedMuted_ = micScriptReady_ = micGranted_ = false;
+        chatMuted_ = micAppliedMuted_ = micScriptReady_ = micGranted_ = chatReloaded_ = false;
     }
     void toggleChatMic() {
         uint64_t now = GetTickCount64();
@@ -1656,7 +1676,10 @@ private:
     std::string lastPartySent_, partyMessage_, partyDigits_;
     uint64_t lastPartyRead_ = 0, lastPartySend_ = 0;
     bool partyLaunched_ = false, partyApplied_ = false, partyKeypad_ = false;
-    bool micGranted_ = false;  // chatgpt.com may use the microphone (granted through DevTools)
+    bool micGranted_ = false;
+    bool chatReloaded_ = false;  // CHATGPT: reloaded once after the mute script went in
+    std::atomic<bool> volumeChecking_{false};
+    uint64_t lastVolumeCheck_ = 0;  // chatgpt.com may use the microphone (granted through DevTools)
     uint64_t lastMuteApply_ = 0;
     int lastMuteCount_ = 0;
     FisheyeMap panelFisheye_;

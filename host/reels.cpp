@@ -3,6 +3,7 @@
 #include "reels.h"
 #include "host.h"
 #include <winhttp.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -72,6 +73,7 @@ bool CdpInput::ensure() {
     broken_ = false;
     reader_ = std::thread(&CdpInput::reader, this);
     hostLog("reels: connected to Edge page %ls", path.c_str());
+    for (auto& js : startupScripts_) sendStartupScript(js);
     return true;
 }
 
@@ -258,10 +260,15 @@ std::string CdpInput::evaluateString(const std::string& js, DWORD timeoutMs) {
     return replyString(reply_);
 }
 
-bool CdpInput::addStartupScript(const std::string& js) {
-    std::lock_guard<std::mutex> lock(mutex_);
+bool CdpInput::sendStartupScript(const std::string& js) {
     return sendJson("{\"id\":" + std::to_string(nextId_++) + ",\"method\":\"Page.addScriptToEvaluateOnNewDocument\",\"params\":{\"source\":" +
                     jsonString(js) + "}}");
+}
+
+bool CdpInput::addStartupScript(const std::string& js) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (std::find(startupScripts_.begin(), startupScripts_.end(), js) == startupScripts_.end()) startupScripts_.push_back(js);
+    return sendStartupScript(js);
 }
 
 bool CdpInput::browserCommand(const std::string& json) {

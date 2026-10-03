@@ -7,6 +7,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 class CdpInput {
 public:
@@ -19,6 +20,7 @@ public:
     // JavaScript in the page now (Runtime.evaluate), and in every page loaded from now on (before its own scripts)
     bool evaluate(const std::string& js);
     bool addStartupScript(const std::string& js);
+    void clearStartupScripts() { std::lock_guard<std::mutex> lock(mutex_); startupScripts_.clear(); }  // a new browser
     // Runs js in the page and returns its result, which must be a string ("" on failure or after timeoutMs)
     std::string evaluateString(const std::string& js, DWORD timeoutMs);
     // A command for the whole browser (its own DevTools socket, e.g. Browser.grantPermissions); true once sent
@@ -30,6 +32,7 @@ public:
 private:
     bool ensure();                         // (re)connects to the first page target
     bool sendJson(const std::string& json);
+    bool sendStartupScript(const std::string& js);
     void cssPoint(HWND window, float x, float y, int& cx, int& cy) const;
     void reader();                         // drains responses and events
 
@@ -42,6 +45,8 @@ private:
     std::atomic<bool> broken_{false};
     int nextId_ = 1;
     uint64_t lastAttempt_ = 0;
+    // Startup scripts belong to the DevTools connection: they are sent again after a reconnect
+    std::vector<std::string> startupScripts_;
     // evaluateString: the reply the reader waits for
     std::mutex replyMutex_;
     std::condition_variable replyReady_;
