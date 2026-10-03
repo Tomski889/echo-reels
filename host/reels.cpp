@@ -73,6 +73,8 @@ bool CdpInput::ensure() {
     broken_ = false;
     reader_ = std::thread(&CdpInput::reader, this);
     hostLog("reels: connected to Edge page %ls", path.c_str());
+    // Startup scripts only run in pages loaded later once the Page domain is enabled (tested: without it a reload drops them)
+    sendJson("{\"id\":" + std::to_string(nextId_++) + ",\"method\":\"Page.enable\",\"params\":{}}");
     for (auto& js : startupScripts_) sendStartupScript(js);
     return true;
 }

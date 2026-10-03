@@ -163,6 +163,8 @@ struct Dock {
     // take touches and shots; the docked one is first.
     std::vector<Xform> faces;
     U lastSeen = 0;
+    U lastApply = 0;  // the arcade last put on the poster model (maintain)
+    unsigned slice = ~0u;  // the poster's art slice when it was last put on
 } dock;
 LONG handled = 0;               // last dockSerial answered
 U lastTick = 0;                 // the touch-button Update last drove DOCK
@@ -397,6 +399,20 @@ void maintain(U now) {
         int r = overrideTexture(cs, key, item, at<unsigned>(item, 4));
         if (r == 0) stream::setPosterActive(true);
         else { at<U>(item, 0x08) = dock.savedName; dock = Dock{}; answer(arcade::Undocked, "The server replaced the poster; undocked."); }
+        dock.lastApply = now;
+        return;
+    }
+    // Some lobby posters cycle their art: every 30 s the game moves the poster's art slice (+0x04, e.g. 7 <-> 8) and puts
+    // the level's art back on the model, without touching +0x08. The arcade goes back on at once when the slice moves, and
+    // every second anyway. The texture is already loaded, so this only re-binds it.
+    unsigned slice = at<unsigned>(item, 4);
+    if (slice != dock.slice || now - dock.lastApply >= 1000) {
+        dock.slice = slice;
+        dock.lastApply = now;
+        U key[2] = {at<U>(at<P>(cs, 0x108), size_t(index) * 16), at<U>(at<P>(cs, 0x108), size_t(index) * 16 + 8)};
+        int r = overrideTexture(cs, key, item, at<unsigned>(item, 4));
+        static int failures = 0;
+        if (r != 0 && failures++ < 3) logf("posters: re-applying the arcade to the docked poster failed (%d)", r);
     }
 }
 

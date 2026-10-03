@@ -127,20 +127,47 @@ const char* const MIC_SCRIPT = R"JS((() => {
   if (window.__echoMicPatched) return;
   window.__echoMicPatched = true;
   window.__echoMuted = false;
-  window.__echoTracks = [];
+  // Every microphone track the page gets, its copies (clone) and every audio track it sends over WebRTC (ChatGPT's voice)
+  const tracks = window.__echoTracks = new Set();
+  const peers = window.__echoPeers = new Set();
+  const keep = track => {
+    if (!track || track.kind !== 'audio') return track;
+    tracks.add(track);
+    if (window.__echoMuted) track.enabled = false;
+    return track;
+  };
   const devices = navigator.mediaDevices;
-  if (!devices || !devices.getUserMedia) return;
-  const original = devices.getUserMedia.bind(devices);
-  devices.getUserMedia = async (constraints) => {
-    const stream = await original(constraints);
-    stream.getAudioTracks().forEach(track => { window.__echoTracks.push(track); track.enabled = !window.__echoMuted; });
-    return stream;
+  if (devices && devices.getUserMedia) {
+    const original = devices.getUserMedia.bind(devices);
+    devices.getUserMedia = async (constraints) => {
+      const stream = await original(constraints);
+      stream.getAudioTracks().forEach(keep);
+      return stream;
+    };
+  }
+  const clone = MediaStreamTrack.prototype.clone;
+  MediaStreamTrack.prototype.clone = function () { const copy = clone.call(this); if (tracks.has(this)) keep(copy); return copy; };
+  if (window.RTCPeerConnection) {
+    const P = RTCPeerConnection.prototype;
+    const addTrack = P.addTrack, addTransceiver = P.addTransceiver;
+    P.addTrack = function (track, ...rest) { peers.add(this); keep(track); return addTrack.call(this, track, ...rest); };
+    P.addTransceiver = function (what, ...rest) { peers.add(this); if (typeof what !== 'string') keep(what); return addTransceiver.call(this, what, ...rest); };
+    const replaceTrack = RTCRtpSender.prototype.replaceTrack;
+    RTCRtpSender.prototype.replaceTrack = function (track) { keep(track); return replaceTrack.call(this, track); };
+  }
+  const all = () => {
+    const list = new Set(tracks);
+    peers.forEach(pc => { try { pc.getSenders().forEach(s => { if (s.track && s.track.kind === 'audio') list.add(s.track); }); } catch (e) {} });
+    return list;
   };
   window.__echoMute = (muted) => {
     window.__echoMuted = muted;
-    window.__echoTracks.forEach(track => { track.enabled = !muted; });
-    return window.__echoTracks.length;
+    const list = all();
+    list.forEach(track => { track.enabled = !muted; });
+    return list.size;
   };
+  window.__echoMicInfo = () => JSON.stringify({muted: window.__echoMuted, peers: peers.size,
+    tracks: [...all()].map(t => ({label: t.label.slice(0, 30), enabled: t.enabled, state: t.readyState}))});
 })();)JS";
 const Rect RESUME_BUTTON{312, 190, 712, 270}, QUIT_BUTTON{312, 300, 712, 380};
 const Rect BACK_BUTTON{12, 10, 150, 66};
