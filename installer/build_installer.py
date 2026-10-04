@@ -40,6 +40,9 @@ def main():
             add(f, f'native/generated/{f.name}')
         add(ROOT / 'dist/EchoArcade.dll', 'dist/EchoArcade.dll')
         add(ROOT / 'dist/EchoArcade/ArcadeHost.exe', 'dist/EchoArcade/ArcadeHost.exe')
+        for f in sorted((ROOT / 'dist/EchoParty').rglob('*')):
+            if f.is_file():
+                add(f, f.relative_to(ROOT).as_posix())
         add(ROOT / 'dist/loader/dinput8.dll', 'loader/dinput8.dll')
         # The camera plugin, built in Echo Restoration (ECHOCAM_DLL overrides where it is)
         echocam = Path(os.environ.get('ECHOCAM_DLL', ROOT.parent / 'echo halloween/echocam/EchoCam.dll'))

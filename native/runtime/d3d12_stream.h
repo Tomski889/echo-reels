@@ -11,6 +11,7 @@
 // with the frames that sample them.
 namespace stream {
 bool install(arcade::Shared* shared);  // hooks D3D12; call from a normal thread (not DllMain)
+void setPartySource(arcade::Shared* party, bool selected);
 void setVisible(bool visible);         // tablet: upload only while the ARCADE page is on screen
 // Poster: upload only while docked. Turning it off takes effect before this returns, so
 // the caller can let the engine release the texture right after.

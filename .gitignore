@@ -12,3 +12,8 @@ __pycache__/
 /native/generated/posters.h
 # Cloudflare deploy cache (party-server)
 .wrangler/
+
+# Private voice-party identities and local development state
+voice-party/app/.local/
+voice-party/app/node_modules/
+voice-party/app/test-results/

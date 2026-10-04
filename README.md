@@ -1,4 +1,10 @@
 # Echo Reels (a fork of Echo Arcade)
+
+**Experimental Party voice tab:** this branch adds an invite-only, four-person
+voice page to the tablet, with friends, invitations, mute/deafen and a touch
+keyboard. See [voice-party/README.md](voice-party/README.md) for build requirements,
+hosting and validation limits. It starts with a local demo; friends on other PCs
+need a shared HTTPS deployment. Live headset and cloud deployment tests are pending.
 BIG CREDITS TO THE BABS- GUY HES AWESOME AND DID 90% OF THISD
 This fork of [kotorvr/echo-arcade](https://github.com/kotorvr/echo-arcade) adds a **REELS** tile: **Instagram Reels on the Echo VR hand tablet**, and a lightweight installer that installs only that tile.
 

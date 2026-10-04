@@ -10,9 +10,9 @@ GRID_COLS, GRID_ROWS = 32, 18     # invisible poke cells over the screen (~8.6 m
 # on the bar (between its corner marks at x~61 and x~929). Stock spacing is 204.8,
 # which only fits 4.
 TAB_SIZE = 89                                   # stock icon size
-TAB_SPACING = 139
-TAB_SLOT_CENTERS = tuple(512 + (i - 2.5) * TAB_SPACING for i in range(6))
-ARCADE_SLOT, STOCK_SLOTS, SETTINGS_SLOT = 0, (1, 2, 3, 4), 5
+TAB_SPACING = 119
+TAB_SLOT_CENTERS = tuple(512 + (i - 3) * TAB_SPACING for i in range(7))
+ARCADE_SLOT, STOCK_SLOTS, PARTY_SLOT, SETTINGS_SLOT = 0, (1, 2, 3, 4), 5, 6
 TAB_Y = (662, 751)
 # Lobby poster screen (DOCK): every dynamic poster maps its face to texture u 0.016..0.876,
 # v 0.032..0.97 (the shader doubles the mesh's v). The frame sits in that face at 16:9 on a

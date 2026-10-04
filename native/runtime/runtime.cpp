@@ -70,6 +70,7 @@ Dispatch dispatchOriginal; Loaded loadedOriginal; Unload unloadOriginal; ButtonU
 std::recursive_mutex mutex;
 std::atomic<bool> fault{false};
 arcade::Shared* shared = nullptr;
+arcade::Shared* partyShared = nullptr;
 std::unordered_map<U, unsigned> cellIndex;
 std::atomic<U> lastTabletTick{0};
 std::atomic<bool> arcadeSelected{false};
@@ -89,7 +90,7 @@ constexpr U MARKERS[KINDS] = {ARCADE_ROOT_MARKER, ARCADE_NAV_MARKER, ARCADE_PAGE
 
 struct View { void* p = nullptr; bool saved = false; float opacity = 0; std::array<bool, 3> visible{}; };
 enum class Page { Stock, Arcade };
-enum class Mode { Arcade = 0, Settings = 1 };  // both tabs show our page; the host draws either
+enum class Mode { Arcade = 0, Settings = 1, Party = 2 };  // both tabs show our page; the host draws either
 struct Context {
     Page page = Page::Stock;
     Mode mode = Mode::Arcade;
@@ -106,7 +107,7 @@ std::set<std::array<U, 3>> held;                            // (gamespace, actor
 
 bool isContent(U n) { return std::find(std::begin(CONTENT), std::end(CONTENT), n) != std::end(CONTENT); }
 bool isStockTab(U n) { return n >= STOCK_TAB_FIRST && n <= STOCK_TAB_LAST; }
-bool isOurTab(U n) { return n == ARCADE_TAB || n == SETTINGS_TAB; }
+bool isOurTab(U n) { return n == ARCADE_TAB || n == SETTINGS_TAB || n == PARTY_TAB; }
 int cellOf(U n) { auto it = cellIndex.find(n); return it == cellIndex.end() ? -1 : int(it->second); }
 
 void remember(void* p, unsigned depth = 0) {
@@ -128,25 +129,29 @@ void remember(void* p, unsigned depth = 0) {
     }
 }
 
-bool hostAlive() { return shared && arcade::alive(shared->hostHeartbeat, GetTickCount64()); }
+arcade::Shared* sourceFor(Mode mode) { return mode == Mode::Party ? partyShared : shared; }
+bool hostAlive(Mode mode) { auto s=sourceFor(mode); return s && arcade::alive(s->hostHeartbeat, GetTickCount64()); }
 
 void releaseAllTouches(void* gs) {
     for (auto it = held.begin(); it != held.end();) {
         if (reinterpret_cast<void*>((*it)[0]) == gs) {
             int cell = cellOf((*it)[2]);
-            if (cell >= 0 && shared) arcade::pushTouch(shared, unsigned(cell), arcade::TouchUp);
+            auto source=sourceFor(contexts[gs].mode);
+            if (cell >= 0 && source) arcade::pushTouch(source, unsigned(cell), arcade::TouchUp);
             it = held.erase(it);
         } else ++it;
     }
 }
 
-void startHost() {
-    if (hostAlive()) return;
-    static U lastAttempt = 0;
+void startHost(Mode mode) {
+    if (hostAlive(mode)) return;
+    static U attempts[2] = {};
+    U& lastAttempt = attempts[mode == Mode::Party ? 1 : 0];
     U now = GetTickCount64();
     if (lastAttempt && now - lastAttempt < 5000) return;
     lastAttempt = now;
-    std::wstring exePath = pluginDir + L"\\EchoArcade\\ArcadeHost.exe";
+    std::wstring folder=pluginDir + (mode == Mode::Party ? L"\\EchoParty" : L"\\EchoArcade");
+    std::wstring exePath = folder + (mode == Mode::Party ? L"\\PartyHost.exe" : L"\\ArcadeHost.exe");
     std::wstring cmd = L"\"" + exePath + L"\"";
     STARTUPINFOW si{sizeof(si)};
     PROCESS_INFORMATION pi{};
@@ -158,7 +163,7 @@ void startHost() {
     void* env = startupEnvironment.empty() ? nullptr : startupEnvironment.data();
     if (!CreateProcessW(exePath.c_str(), cmd.data(), nullptr, nullptr, FALSE,
                         CREATE_SUSPENDED | CREATE_NO_WINDOW | (env ? CREATE_UNICODE_ENVIRONMENT : 0),
-                        env, (pluginDir + L"\\EchoArcade").c_str(), &si, &pi)) {
+                        env, folder.c_str(), &si, &pi)) {
         logf("could not start ArcadeHost.exe (error %lu)", GetLastError());
         return;
     }
@@ -198,20 +203,22 @@ void render(Context& c) {
     }
     // Tab highlights: ours while our page is up, otherwise the stock ones (which the
     // game's own scripts keep pointing at the right stock tab).
-    int nav = !active ? 0 : c.mode == Mode::Settings ? 2 : 1;
+    int nav = !active ? 0 : c.mode == Mode::Party ? 3 : c.mode == Mode::Settings ? 2 : 1;
     if (c.views[1].p && c.navState != nav) {
         show(c.views[1].p, ARCADE_NAV_SELECTED, nav == 1);
         show(c.views[1].p, SETTINGS_NAV_SELECTED, nav == 2);
+        show(c.views[1].p, PARTY_NAV_SELECTED, nav == 3);
         for (auto i : ARCADE_NAV_STOCK_SELECTED) show(c.views[1].p, i, nav == 0);
-        if (root.p && nav) text(root.p, ARCADE_ROOT_TITLE, nav == 2 ? "SETTINGS" : "ARCADE");
+        if (root.p && nav) text(root.p, ARCADE_ROOT_TITLE, nav == 3 ? "PARTY" : nav == 2 ? "SETTINGS" : "ARCADE");
         c.navState = nav;
     }
     if (active && c.views[2].p) {
         U now = GetTickCount64();
-        bool frames = shared && shared->latestFrame != LONG(arcade::NO_FRAME);
-        if (hostAlive() && frames) setStatus(c, c.views[2].p, false, "");
-        else if (hostAlive()) setStatus(c, c.views[2].p, true, "ARCADE HOST RUNNING - WAITING FOR FIRST FRAME");
-        else setStatus(c, c.views[2].p, true, "STARTING ARCADE HOST... (SEE %LOCALAPPDATA%\\ECHOARCADE)");
+        auto source=sourceFor(c.mode);
+        bool frames = source && source->latestFrame != LONG(arcade::NO_FRAME);
+        if (hostAlive(c.mode) && frames) setStatus(c, c.views[2].p, false, "");
+        else if (hostAlive(c.mode)) setStatus(c, c.views[2].p, true, c.mode == Mode::Party ? "PARTY HOST RUNNING - WAITING FOR FIRST FRAME" : "ARCADE HOST RUNNING - WAITING FOR FIRST FRAME");
+        else setStatus(c, c.views[2].p, true, c.mode == Mode::Party ? "STARTING PARTY HOST... CHECK ECHOPARTY HOST LOG" : "STARTING ARCADE HOST... (SEE %LOCALAPPDATA%\\ECHOARCADE)");
         lastTabletTick = now;
     }
 }
@@ -297,6 +304,7 @@ void refreshSelection() {
         if (c.page == Page::Arcade && c.views[2].p != nullptr) { any = true; mode = int(c.mode); }
     arcadeSelected = any && !fault;
     pageMode = mode;
+    stream::setPartySource(partyShared, mode == int(Mode::Party) && any && !fault);
 }
 
 // ---- hooks (engine threads) ----
@@ -361,7 +369,8 @@ void onEvent(void* gs, U event, U actor, U component) {
     auto& c = it->second;
     std::array<U, 3> key = {reinterpret_cast<U>(gs), actor, component};
     if (event == RELEASE) {
-        if (held.erase(key) && cell >= 0 && shared) arcade::pushTouch(shared, unsigned(cell), arcade::TouchUp);
+        auto source=sourceFor(c.mode);
+        if (held.erase(key) && cell >= 0 && source) arcade::pushTouch(source, unsigned(cell), arcade::TouchUp);
         return;
     }
     if (!held.insert(key).second) return;
@@ -369,14 +378,14 @@ void onEvent(void* gs, U event, U actor, U component) {
         if (c.page == Page::Arcade) { releaseAllTouches(gs); held.insert(key); logf("left ARCADE page"); }
         c.page = Page::Stock;
     } else if (isOurTab(component)) {
-        Mode mode = component == SETTINGS_TAB ? Mode::Settings : Mode::Arcade;
-        if (c.page != Page::Arcade || c.mode != mode) logf("%s page selected", mode == Mode::Settings ? "SETTINGS" : "ARCADE");
+        Mode mode = component == PARTY_TAB ? Mode::Party : component == SETTINGS_TAB ? Mode::Settings : Mode::Arcade;
+        if (c.page != Page::Arcade || c.mode != mode) logf("%s page selected", mode == Mode::Party ? "PARTY" : mode == Mode::Settings ? "SETTINGS" : "ARCADE");
         if (c.page == Page::Arcade && c.mode != mode) { releaseAllTouches(gs); held.insert(key); }
         c.page = Page::Arcade;
         c.mode = mode;
-        startHost();
-    } else if (c.page == Page::Arcade && shared) {
-        arcade::pushTouch(shared, unsigned(cell), arcade::TouchDown);
+        startHost(mode);
+    } else if (c.page == Page::Arcade && sourceFor(c.mode)) {
+        arcade::pushTouch(sourceFor(c.mode), unsigned(cell), arcade::TouchDown);
     }
     refreshSelection();
 }
@@ -420,11 +429,12 @@ void heartbeatLoop() {
         bool visible = arcadeSelected && now - lastTabletTick.load() < 500;
         if (shared) {
             shared->gameHeartbeat = LONG64(now);
-            shared->pageVisible = visible;
-            shared->pageMode = pageMode;
+            shared->pageVisible = visible && pageMode != int(Mode::Party);
+            shared->pageMode = pageMode == int(Mode::Party) ? 0 : pageMode.load();
             if (shared->tabletScale > 0) tablet::request(shared->tabletScale / 1000.f);
             posters::heartbeat(now);
         }
+        if (partyShared) { partyShared->gameHeartbeat=LONG64(now); partyShared->pageVisible=visible && pageMode==int(Mode::Party); }
         stream::setVisible(visible);
     }
 }
@@ -435,6 +445,9 @@ void initialize() {
     for (unsigned i = 0; i < ARCADE_GRID_COLS * ARCADE_GRID_ROWS; i++) cellIndex[ARCADE_CELLS[i]] = i;
     HANDLE mapping = nullptr;
     shared = arcade::open(&mapping);
+    HANDLE partyMapping=nullptr;
+    partyShared=arcade::open(&partyMapping,L"Local\\EchoParty.Shared.v1");
+    if (partyShared) { partyShared->gamePid=LONG(GetCurrentProcessId());partyShared->cols=ARCADE_GRID_COLS;partyShared->rows=ARCADE_GRID_ROWS; }
     if (!shared) logf("shared memory unavailable (error %lu); touches and frames disabled", GetLastError());
     else { shared->gamePid = LONG(GetCurrentProcessId()); shared->cols = ARCADE_GRID_COLS; shared->rows = ARCADE_GRID_ROWS; }
     job = CreateJobObjectW(nullptr, nullptr);

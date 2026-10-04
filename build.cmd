@@ -25,6 +25,9 @@ if errorlevel 1 exit /b 1
 cl /nologo /O2 /MT /W4 /EHsc /std:c++20 /DUNICODE /D_UNICODE /wd4100 /wd4201 host\main.cpp host\canvas.cpp host\capture.cpp host\apps.cpp host\playlists.cpp host\mpv.cpp host\plex.cpp host\audio.cpp host\lightgun.cpp host\reels.cpp host\camera.cpp host\voice.cpp host\spatial.cpp host\party.cpp /Fo:build\obj\ /Fe:dist\EchoArcade\ArcadeHost.exe /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib d3d11.lib dxgi.lib ws2_32.lib windowsapp.lib dwmapi.lib shell32.lib ole32.lib runtimeobject.lib winhttp.lib windowscodecs.lib mmdevapi.lib
 if errorlevel 1 exit /b 1
 
+call voice-party\build.cmd
+if errorlevel 1 exit /b 1
+
 cl %CFLAGS% tests\ipc_test.cpp /Fo:build\obj\ /Fe:build\ipc_test.exe
 if errorlevel 1 exit /b 1
 cl %CFLAGS% tests\tablet_scan_test.cpp native\runtime\tablet_scale.cpp /Fo:build\obj\ /Fe:build\tablet_scan_test.exe

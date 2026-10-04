@@ -31,7 +31,7 @@ from echovr_patch import Patcher, ManifestFile, MID, GAME_MANIFEST, GAME_PACKAGE
 from build_tools_tab import empty_canvas, ROOT_CANVAS, NAV_CANVAS, LEVEL, ACTOR  # noqa: E402
 from arcade_layout import (PAGE_W, PAGE_H, PAGE_X, PAGE_Y, SCREEN_RECT, TEX_W, TEX_H,  # noqa: E402
                            GRID_COLS, GRID_ROWS, TAB_SLOT_CENTERS, ARCADE_SLOT, STOCK_SLOTS,
-                           SETTINGS_SLOT, POSTER_TEX_W, POSTER_TEX_H, POSTER_X0, POSTER_Y0,
+                           SETTINGS_SLOT, PARTY_SLOT, POSTER_TEX_W, POSTER_TEX_H, POSTER_X0, POSTER_Y0,
                            tab_rect, splash_bgra)
 import build_poster_table  # noqa: E402
 from tab_icon import tab_icons  # noqa: E402
@@ -46,6 +46,7 @@ POSTER_TEXTURE = P.sym('echo_arcade_poster_screen_v1')
 ICON_TEXTURE = P.sym('echo_arcade_tab_icon_texture_v1')
 TAB_BUTTON = P.sym('echo_arcade_tab_button_v1')
 SETTINGS_BUTTON = P.sym('echo_arcade_settings_button_v1')
+PARTY_BUTTON = P.sym('echo_party_tab_v1')
 STOCK_NAV_CANVAS = NAV_CANVAS
 BGRA_TEMPLATE = 0x84b9a06506af66fe  # stock 128x128 B8G8R8A8_UNORM texture
 NAV_ATLAS = 0x79563b60c7895d4e      # stock UI atlas (BC7_UNORM_SRGB) the tab icons come from
@@ -190,6 +191,12 @@ def build():
     tab_sprite(list_idle, 'echo_arcade_settings_icon_v1', SETTINGS_SLOT, icon_uvs['settings'][0], False)
     nav_settings_selected = tab_sprite(list_sel, 'echo_arcade_settings_selected_v1', SETTINGS_SLOT, icon_uvs['settings'][1], True)
 
+    # Reuse the stock social glyph for the independent Party page.
+    party_icon = nav.append(nav.elements[1], 'echo_party_icon_v1', tab_rect(PARTY_SLOT), parent=struct.unpack_from('<i', nav.elements[1], 0x5c)[0])
+    party_selected = nav.append(nav.elements[2], 'echo_party_selected_v1', tab_rect(PARTY_SLOT), parent=struct.unpack_from('<i', nav.elements[2], 0x5c)[0], hidden=True)
+    for idx, template in ((party_icon, nav.elements[1]), (party_selected, nav.elements[2])):
+        nav.elements[idx][0x24:0x34] = template[0x24:0x34]
+
     # Page canvas.
     page = empty_canvas(stock.get(cv, TITLE_DONOR), PAGE_W, PAGE_H)
     struct.pack_into('<Q', page.header, 0, PAGE)
@@ -226,11 +233,11 @@ def build():
         struct.pack_into('<4f', row, 0x90, 0, 0, 1, 1)
         struct.pack_into('<2I', root.header, 0x2c, 272, 408)  # room for its quad
         print('SIDE PROBE: arcade screen also drawn at', SIDE_PROBE_RECT, 'in the root canvas')
-    struct.pack_into('<2I', nav.header, 0x2c, 548, 822)
+    struct.pack_into('<2I', nav.header, 0x2c, 564, 846)
     for c in (root, nav, page):
         fix_texture_count(c)
         c.validate()
-    assert struct.unpack_from('<I', page.header, 0x28)[0] == 2 and struct.unpack_from('<I', nav.header, 0x28)[0] == 13
+    assert struct.unpack_from('<I', page.header, 0x28)[0] == 2 and struct.unpack_from('<I', nav.header, 0x28)[0] == 15
     assert [bytes(r) for r in root.elements[:7]] == old_root
     for i, (old, new) in enumerate(zip(old_nav, nav.elements[:9])):  # stock tabs: only their x position moved
         assert old[:0x34] == new[:0x34] and old[0x44:] == new[0x44:], f'nav element {i} changed beyond its rect'
@@ -268,6 +275,7 @@ def build():
     changed_rows = {i for i, r in enumerate(rows) if 0x275876572b742791 <= u64(r, 0) <= 0x275876572b742794 and u64(r, 8) == ACTOR}
     add_button(TAB_BUTTON, tab_rect(ARCADE_SLOT))
     add_button(SETTINGS_BUTTON, tab_rect(SETTINGS_SLOT))
+    add_button(PARTY_BUTTON, tab_rect(PARTY_SLOT))
     sx0, sy0, sx1, sy1 = SCREEN_RECT
     cw, ch = (sx1 - sx0) / GRID_COLS, (sy1 - sy0) / GRID_ROWS
     for r in range(GRID_ROWS):
@@ -330,6 +338,7 @@ def build():
         f'constexpr unsigned ARCADE_PAGE_ELEMENTS={len(page.elements)}, ARCADE_ROOT_ELEMENTS={len(root.elements)}, ARCADE_NAV_ELEMENTS={len(nav.elements)};\n'
         f'constexpr unsigned ARCADE_ROOT_CHILD={child}, ARCADE_ROOT_HEADER={header}, ARCADE_ROOT_TITLE={title};\n'
         f'constexpr unsigned ARCADE_NAV_ICON={nav_icon}, ARCADE_NAV_SELECTED={nav_selected}, SETTINGS_NAV_SELECTED={nav_settings_selected};\n'
+        f'constexpr uint64_t PARTY_TAB=0x{PARTY_BUTTON:016x}; constexpr unsigned PARTY_NAV_SELECTED={party_selected};\n'
         f'constexpr unsigned ARCADE_NAV_STOCK_SELECTED[]={{{",".join(str(m[3]) for m in moves)}}};\n'
         f'constexpr unsigned ARCADE_PAGE_SCREEN={screen}, ARCADE_PAGE_STATUS={status};\n'
         f'constexpr unsigned ARCADE_GRID_COLS={GRID_COLS}, ARCADE_GRID_ROWS={GRID_ROWS};\n'

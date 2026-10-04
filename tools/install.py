@@ -29,7 +29,7 @@ DEFAULT_GAME = ROOT.parent / 'ready-at-dawn-echo-arena'
 STATE = ROOT / 'install_state.json'
 MID = '48037dc70b0ecab2'
 EXE_TIMESTAMP, EXE_SIZE = 1683152886, 35852288
-TAB_SCHEMA = 2  # bump when build_arcade_tab.py output changes (2: DOCK poster screen)
+TAB_SCHEMA = 3  # bump when build_arcade_tab.py output changes (2: DOCK poster screen)
 
 
 def sha(path: Path):
@@ -123,7 +123,7 @@ def install(game: Path):
     if STATE.exists():
         raise SystemExit('Already installed (install_state.json exists). Run restore first.')
     p = paths(game)
-    for f in (ROOT / 'dist/EchoArcade.dll', ROOT / 'dist/EchoArcade/ArcadeHost.exe'):
+    for f in (ROOT / 'dist/EchoArcade.dll', ROOT / 'dist/EchoArcade/ArcadeHost.exe', ROOT / 'dist/EchoParty/PartyHost.exe'):
         if not f.exists():
             raise SystemExit(f'{f} missing: run build.cmd first')
     sys.path.insert(0, str(ROOT / 'tools'))
@@ -201,6 +201,12 @@ def copy_binaries(p):
     host_dir = p['plugins'] / 'EchoArcade'
     host_dir.mkdir(exist_ok=True)
     shutil.copy2(ROOT / 'dist/EchoArcade/ArcadeHost.exe', host_dir / 'ArcadeHost.exe')
+    party_source = ROOT / 'dist/EchoParty'
+    party_target = p['plugins'] / 'EchoParty'
+    # Preserve the configured shared service URL on binary updates.
+    def ignore_config(folder, names):
+        return ['party.json'] if Path(folder) == party_source and (party_target / 'party.json').exists() else []
+    shutil.copytree(party_source, party_target, dirs_exist_ok=True, ignore=ignore_config)
     write_ini(host_dir)
     write_tweaks(p)
 
@@ -211,14 +217,14 @@ def update(game: Path):
         raise SystemExit('Not installed yet: run install first.')
     state = json.loads(STATE.read_text())
     if state.get('tab_schema', 1) < TAB_SCHEMA:
-        raise SystemExit('This version changes the tablet data (DOCK adds a poster screen), so update is not enough.\n'
+        raise SystemExit('This version changes the tablet data (adds the Party navigation tab), so update is not enough.\n'
                          'Close Echo VR and run:  .venv\\Scripts\\python tools\\install.py reinstall')
     p = paths(Path(state['game']))
     copy_binaries(p)
     loader = load_loader(p['loader'])
     ensure_loader_entry(loader.setdefault('plugins', []))
     p['loader'].write_text(json.dumps(loader, indent=4) + '\n', encoding='utf-8')
-    print('Updated EchoArcade.dll, ArcadeHost.exe and arcade.ini (tablet data unchanged).')
+    print('Updated EchoArcade.dll, ArcadeHost.exe, PartyHost and arcade.ini (tablet data unchanged).')
     check_echoloader(p)
 
 

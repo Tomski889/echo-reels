@@ -43,6 +43,9 @@ Execute origExecute;
 Barrier origBarrier;
 
 arcade::Shared* shared = nullptr;
+std::atomic<arcade::Shared*> partyShared{nullptr};
+std::atomic<bool> partySelected{false};
+std::atomic<unsigned> sourceEpoch{0};
 std::atomic<bool> running{false}, broken{false};
 std::thread worker;
 
@@ -204,13 +207,17 @@ bool createGpu() {  // caller holds m
 void workerLoop() {
     LONG lastSerial = -1;
     bool wasActive = false;
+    unsigned lastEpoch=~0u;
     while (running) {
         Sleep(2);
+        unsigned epoch=sourceEpoch.load();
+        auto source=partySelected.load() ? partyShared.load() : shared;
+        if (epoch!=lastEpoch) { lastSerial=-1;lastEpoch=epoch; }
         bool active = anyActive();
         if (active && !wasActive) lastSerial = -1;  // re-upload the current frame for a newly shown target
         wasActive = active;
-        if (!active || broken || !shared || shared->latestFrame == LONG(arcade::NO_FRAME)) continue;
-        LONG serial = shared->frameSerial;
+        if (!active || broken || !source || source->latestFrame == LONG(arcade::NO_FRAME)) continue;
+        LONG serial = source->frameSerial;
         if (serial == lastSerial) continue;
         Slot* slot = nullptr;
         {
@@ -222,12 +229,13 @@ void workerLoop() {
             if (!slot) continue;
             slot->state = SlotState::Filling;
         }
-        LONG index = shared->latestFrame;
-        InterlockedExchange(&shared->readingFrame, index);
-        bool ok = index >= 0 && index < LONG(arcade::FRAME_BUFFERS) && shared->latestFrame == index;
-        if (ok) memcpy(slot->mapped, shared->frames[index], arcade::FRAME_BYTES);  // same pitch on both sides
-        InterlockedExchange(&shared->readingFrame, LONG(arcade::NO_FRAME));
+        LONG index = source->latestFrame;
+        InterlockedExchange(&source->readingFrame, index);
+        bool ok = index >= 0 && index < LONG(arcade::FRAME_BUFFERS) && source->latestFrame == index;
+        if (ok) memcpy(slot->mapped, source->frames[index], arcade::FRAME_BYTES);  // same pitch on both sides
+        InterlockedExchange(&source->readingFrame, LONG(arcade::NO_FRAME));
         std::lock_guard<std::mutex> lock(m);
+        ok=ok && sourceEpoch.load()==epoch;
         slot->serial = serial;
         slot->state = ok ? SlotState::Ready : SlotState::Free;
         if (ok) lastSerial = serial;
@@ -252,7 +260,7 @@ void recordAndSubmit(ID3D12CommandQueue* q) {  // caller holds m
     if (!ready) return;
     Target* live[TARGETS];
     int count = 0;
-    for (auto& t : targets) if (t.active && t.resource) live[count++] = &t;
+    for (auto& t : targets) if (t.active && t.resource && !(partySelected.load() && &t==&targets[POSTER])) live[count++] = &t;
     if (!count) return;
     if (FAILED(ready->allocator->Reset())) return;
     ownCall = true;
@@ -369,6 +377,15 @@ bool install(arcade::Shared* s) {
     worker = std::thread(workerLoop);
     logf("stream: D3D12 hooks installed");
     return true;
+}
+
+void setPartySource(arcade::Shared* party, bool selected) {
+    std::lock_guard<std::mutex> lock(m);
+    partyShared=party;
+    if (partySelected.exchange(selected)!=selected) {
+        sourceEpoch.fetch_add(1);
+        for (auto& s : slots) if (s.state==SlotState::Ready) s.state=SlotState::Free;
+    }
 }
 
 void setVisible(bool v) {

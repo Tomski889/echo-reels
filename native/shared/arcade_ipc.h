@@ -74,8 +74,8 @@ inline bool alive(LONG64 heartbeat, uint64_t now, uint64_t tolerance = 3000) {
 }
 
 // Opens (or creates) the mapping. Either side may start first.
-inline Shared* open(HANDLE* mapping) {
-    *mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(Shared), SHARED_NAME);
+inline Shared* open(HANDLE* mapping, const wchar_t* name = SHARED_NAME) {
+    *mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(Shared), name);
     if (!*mapping) return nullptr;
     bool created = GetLastError() != ERROR_ALREADY_EXISTS;
     auto s = static_cast<Shared*>(MapViewOfFile(*mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared)));
